@@ -9,7 +9,11 @@ from pyecharts.charts import Bar
 from pyecharts.commons.utils import JsCode
 from pyecharts.charts import Grid
 
-
+if os.path.exists('shares\{}.csv'.format("A股全部股票代码")):
+    stock_info_df = pd.read_csv('shares\{}.csv'.format("A股全部股票代码"), dtype={0: str})
+else:
+    stock_info_df = ak.stock_info_a_code_name()
+    stock_info_df.to_csv('shares\{}.csv'.format("A股全部股票代码"), index=False)
 # 获取A股历史数据（含成交额）
 def get_a_stock_data(symbol, input_date):
     # 转换代码格式（如300328.SZ -> 300328）
@@ -17,8 +21,8 @@ def get_a_stock_data(symbol, input_date):
     start_date = min(input_date.values())
     today = datetime.now().strftime('%Y%m%d') #20250326
     if os.path.exists('shares\{}.csv'.format(symbol)):
-        df = pd.read_csv('shares\{}.csv'.format(symbol), parse_dates=["日期"])
-        if pd.to_datetime(start_date) in df['日期'].iloc: #csv数据不包括start_date，全部更新数据
+        df = pd.read_csv('shares\{}.csv'.format(symbol))
+        if not pd.to_datetime(start_date) in df['日期'].iloc: #csv数据不包括start_date，全部更新数据
             df = ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=start_date, adjust="qfq") 
             df.to_csv('shares\{}.csv'.format(symbol), index=False)
         elif df['日期'].iloc[-1] < pd.to_datetime(datetime.now()): #csv最新日期小于时间戳，获取最新的数据，追加在后面
@@ -56,7 +60,7 @@ def plot_kline_with_kdas(df, input_date):
         )
     )
     kline.set_global_opts(
-        title_opts=opts.TitleOpts(title="股票K线走势图", subtitle=df['股票代码'][0]),
+        title_opts=opts.TitleOpts(title="股票K线走势图+KDAS画线", subtitle=stock_info_df[stock_info_df["code"] == df['股票代码'][0]]["name"].values[0]+df['股票代码'][0]),
         xaxis_opts=opts.AxisOpts(
             type_='category',
             axislabel_opts=opts.LabelOpts(rotate=45),  # 日期标签旋转45度
@@ -68,19 +72,43 @@ def plot_kline_with_kdas(df, input_date):
                 areastyle_opts=opts.AreaStyleOpts(opacity=1)
             ),is_scale=True # 启用自动缩放
         ),
+        tooltip_opts=opts.TooltipOpts(
+            trigger="axis",
+            axis_pointer_type="cross",
+            background_color="rgba(245, 245, 245, 0.8)",
+            border_width=1,
+            border_color="#ccc",
+            textstyle_opts=opts.TextStyleOpts(color="#000"),
+        ),
+        # visualmap_opts=opts.VisualMapOpts(
+        #     is_show=False,
+        #     dimension=2,
+        #     series_index=5,
+        #     is_piecewise=True,
+        #     pieces=[
+        #         {"value": 1, "color": "#00da3c"},
+        #         {"value": -1, "color": "#ec0000"},
+        #     ],
+        # ),
+        brush_opts=opts.BrushOpts(
+            x_axis_index="all",
+            brush_link="all",
+            out_of_brush={"colorAlpha": 0.1},
+            brush_type="lineX",
+        ),
         datazoom_opts=[  # 添加数据缩放控件
             opts.DataZoomOpts(
-                is_show=True,
+                is_show=False,
                 type_="inside",
                 xaxis_index=[0],
                 range_start=50,
                 range_end=100
             ),
             opts.DataZoomOpts(
-                is_show=True,
+                is_show=False,
                 xaxis_index=[0],
                 type_="slider",
-                pos_top="90%",
+                pos_top="80%",
                 range_start=50,
                 range_end=100
             )
@@ -95,21 +123,16 @@ def plot_kline_with_kdas(df, input_date):
         'day4': {"color": "#ff00f7", "width": 2},   
         'day5': {"color": "#f2ee69", "width": 2},   
     }
+    line.add_xaxis(df['日期'].tolist())
     for key, value in input_date.items():
-            line.add_xaxis(df['日期'].tolist())
             line.add_yaxis(
                 series_name="KDAS:{}".format(value),
                 y_axis=df['KDAS{}'.format(value)].tolist(),
-                symbol="circle",
-                symbol_size=0,
-                linestyle_opts=opts.LineStyleOpts(
-                    color=kdas_colors[key]["color"],
-                    width=kdas_colors[key]["width"]
-                ),
-                label_opts=opts.LabelOpts(is_show=True),  # 关闭数据点标签
-                is_smooth=True,  # 平滑曲线
-                z_level=1  # 确保均线显示在K线上方
-            )
+                is_smooth=True,
+                is_hover_animation=False,
+                linestyle_opts=opts.LineStyleOpts(width=3, opacity=0.5),
+                label_opts=opts.LabelOpts(is_show=False),
+            ).set_global_opts(xaxis_opts=opts.AxisOpts(type_="category"))
     overlap_kline = kline.overlap(line)
 
     df['color'] = df.apply(lambda x: "#ef232a" if x['收盘'] >= x['开盘'] else "#14b143", axis=1)
@@ -152,8 +175,8 @@ def plot_kline_with_kdas(df, input_date):
             grid_opts=opts.GridOpts(
                 pos_left="10%", 
                 pos_right="8%", 
-                height="65%",  # 主图高度65%
-                pos_top="10%"
+                height="50%",  # 主图高度65%
+                # pos_top="10%"
             )
         )
         .add(
@@ -161,23 +184,22 @@ def plot_kline_with_kdas(df, input_date):
             grid_opts=opts.GridOpts(
                 pos_left="10%",
                 pos_right="8%",
-                height="15%",  # 成交量图高度15%
-                pos_top="80%"  # 从80%位置开始
+                height="16%",  # 成交量图高度15%
+                pos_top="65%"  # 从60%位置开始
             )
         )
     )
-    grid.render("stock_kline.html") 
+    grid.render("{}_KDAS.html".format(stock_info_df[stock_info_df["code"] == df['股票代码'][0]]["name"].values[0])) 
 
 # 主程序
 if __name__ == "__main__":
-    symbol = '001215.SZ'  # 宜安科技
-    # start_date = '20240926'  # 假设当前为2025年
+    symbol = '001215'  
     input_date = {
         'day1': '20240923',
         'day2': "20241107",
-        'day3': "20241216",
-        'day4': "20241231",
-        'day5': "20250110"
+        'day3': "20241217",
+        'day4': "20250102",
+        'day5': "20250113"
     }				
     data = get_a_stock_data(symbol, input_date)  
     processed_data = calculate_cumulative_vwap(data, input_date)  
