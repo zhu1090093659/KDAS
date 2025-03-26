@@ -9,6 +9,7 @@ from pyecharts.charts import Bar
 from pyecharts.commons.utils import JsCode
 from pyecharts.charts import Grid
 
+os.makedirs('shares', exist_ok=True)
 if os.path.exists('shares\{}.csv'.format("A股全部股票代码")):
     stock_info_df = pd.read_csv('shares\{}.csv'.format("A股全部股票代码"), dtype={0: str})
 else:
