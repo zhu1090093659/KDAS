@@ -1,12 +1,20 @@
 import os
 import akshare as ak
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
 import json
+
+# 导入AI顾问模块
+try:
+    from kdas_ai_advisor import get_ai_advisor
+    AI_ADVISOR_AVAILABLE = True
+except ImportError:
+    AI_ADVISOR_AVAILABLE = False
+    st.warning("⚠️ AI智能推荐功能需要安装openai库: pip install openai")
 
 os.makedirs('shares', exist_ok=True)
 os.makedirs('etfs', exist_ok=True)
@@ -63,6 +71,43 @@ def delete_saved_config(symbol, security_type):
     config_key = f"{security_type}_{symbol}"
     if config_key in configs:
         del configs[config_key]
+        return save_user_configs(configs)
+    return False
+
+def save_api_key(api_key, model_name):
+    """保存API密钥到配置文件"""
+    configs = load_user_configs()
+    
+    # 确保存在全局设置部分
+    if 'global_settings' not in configs:
+        configs['global_settings'] = {}
+    
+    # 保存API密钥和默认模型
+    configs['global_settings']['api_key'] = api_key
+    configs['global_settings']['default_model'] = model_name
+    configs['global_settings']['save_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    return save_user_configs(configs)
+
+def load_api_key():
+    """从配置文件加载API密钥"""
+    configs = load_user_configs()
+    global_settings = configs.get('global_settings', {})
+    api_key = global_settings.get('api_key', '')
+    default_model = global_settings.get('default_model', 'deepseek-r1')
+    return api_key, default_model
+
+def delete_api_key():
+    """删除保存的API密钥"""
+    configs = load_user_configs()
+    if 'global_settings' in configs:
+        if 'api_key' in configs['global_settings']:
+            del configs['global_settings']['api_key']
+        if 'default_model' in configs['global_settings']:
+            del configs['global_settings']['default_model']
+        # 如果global_settings为空，则删除整个section
+        if not configs['global_settings']:
+            del configs['global_settings']
         return save_user_configs(configs)
     return False
 
@@ -547,6 +592,143 @@ def main():
         
         st.subheader("KDAS计算起始日期")
         
+        # AI智能推荐功能
+        if AI_ADVISOR_AVAILABLE and symbol:
+            st.markdown("#### 🤖 AI智能推荐")
+            
+            # 加载保存的API密钥和模型配置
+            saved_api_key, saved_model = load_api_key()
+            
+            # API密钥配置
+            api_key_input = st.text_input(
+                "OpenAI API密钥", 
+                value=saved_api_key,  # 使用保存的API密钥作为默认值
+                type="password", 
+                help="输入您的OpenAI API密钥以使用AI智能推荐功能",
+                placeholder="sk-..."
+            )
+            
+            # 获取当前模型列表并确定默认选择
+            model_options = ["deepseek-r1", "gemini-2.5-flash-preview-05-20", "gemini-2.5-pro-preview-03-25"]
+            default_model_index = 0
+            if saved_model in model_options:
+                default_model_index = model_options.index(saved_model)
+            
+            # AI模型选择
+            ai_model = st.selectbox(
+                "AI模型选择",
+                model_options,
+                index=default_model_index,
+                help="选择要使用的AI模型"
+            )
+            
+            # API密钥保存/删除按钮
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("💾 保存配置", help="保存API密钥和模型选择，下次无需重新输入"):
+                    if api_key_input.strip():
+                        if save_api_key(api_key_input.strip(), ai_model):
+                            st.success("✅ 配置已保存！")
+                        else:
+                            st.error("❌ 保存失败，请重试")
+                    else:
+                        st.warning("⚠️ 请先输入API密钥")
+            
+            with col2:
+                if saved_api_key and st.button("🗑️ 清除配置", help="删除保存的API密钥"):
+                    if delete_api_key():
+                        st.success("✅ 配置已清除！")
+                        st.rerun()  # 刷新页面以清除输入框
+                    else:
+                        st.error("❌ 清除失败，请重试")
+            
+            if api_key_input:
+                os.environ['OPENAI_API_KEY'] = api_key_input
+            
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                ai_recommend_btn = st.button(
+                    "🧠 AI智能推荐日期", 
+                    help="基于技术分析和KDAS体系原理智能推荐最佳日期",
+                    use_container_width=True
+                )
+            with col2:
+                show_analysis = st.checkbox("显示分析", help="显示详细的技术分析过程")
+            
+            # 处理AI推荐
+            if ai_recommend_btn:
+                # 清除上一次的AI推荐结果，避免混淆
+                for key in ['ai_recommended_dates', 'ai_reasoning', 'ai_confidence']:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                
+                if not api_key_input and not os.getenv('OPENAI_API_KEY'):
+                    st.error("⚠️ 请先配置OpenAI API密钥")
+                else:
+                    with st.spinner("🤖 AI正在分析技术数据并推荐日期..."):
+                        try:
+                            # 获取数据进行分析
+                            temp_dates = {f'day{i+1}': (datetime.now() - timedelta(days=30*i)).strftime('%Y%m%d') for i in range(5)}
+                            analysis_data = get_security_data(symbol, temp_dates, security_type)
+                            
+                            if not analysis_data.empty:
+                                # 获取证券名称
+                                security_name = info_df[info_df["code"] == str(symbol)]["name"].values
+                                security_name = security_name[0] if len(security_name) > 0 else f"未知{security_type}"
+                                
+                                # 调用AI顾问（传入用户选择的模型）
+                                advisor = get_ai_advisor(api_key_input, ai_model)
+                                if advisor:
+                                    result = advisor.generate_kdas_recommendation(
+                                        analysis_data, symbol, security_name, security_type
+                                    )
+                                    
+                                    if result['success']:
+                                        st.success("✅ AI推荐完成！")
+                                        # 保存推荐日期到session_state，然后重新运行以显示结果
+                                        st.session_state.ai_recommended_dates = result['dates']
+                                        st.session_state.ai_reasoning = result['reasoning']
+                                        st.session_state.ai_confidence = result.get('confidence', 'medium')
+                                        st.rerun()
+                                    
+                                    else:
+                                        st.error(f"❌ AI推荐失败: {result['error']}")
+                                        if 'fallback_dates' in result and result['fallback_dates']:
+                                            st.info("💡 使用智能备用日期方案")
+                                            st.session_state.ai_recommended_dates = result['fallback_dates']
+                                            # 使用备用方案也需要重新运行
+                                            st.rerun()
+                                else:
+                                    st.error("❌ 无法初始化AI顾问，请检查API密钥")
+                            else:
+                                st.error("❌ 无法获取数据进行分析")
+                                
+                        except Exception as e:
+                            st.error(f"❌ AI推荐过程出现错误: {str(e)}")
+                            st.info("💡 建议检查网络连接和API密钥配置")
+            
+            # 如果session_state中存在AI推荐的日期，则显示它们及应用按钮
+            if 'ai_recommended_dates' in st.session_state:
+                st.markdown("---")
+                confidence_emoji = {'high': '🟢', 'medium': '🟡', 'low': '🟠'}
+                confidence = st.session_state.get('ai_confidence', 'medium')
+                
+                st.info(f"**AI模型**: {ai_model}")
+                st.info(f"**推荐置信度**: {confidence_emoji.get(confidence, '🟡')} {confidence.upper()}")
+                st.info(f"**推荐日期**: {st.session_state.ai_recommended_dates}")
+                
+                if show_analysis and 'ai_reasoning' in st.session_state:
+                    with st.expander("📊 详细分析过程"):
+                        st.markdown(f"**{ai_model} 分析理由:**")
+                        st.text(st.session_state.ai_reasoning)
+                
+                # 应用推荐按钮
+                if st.button("📅 应用AI推荐日期", type="primary", use_container_width=True):
+                    st.session_state.apply_ai_dates = True
+                    st.rerun()
+
+            st.markdown("---")
+        
         # 使用日期选择器
         default_dates = [
             datetime(2024, 9, 24).date(),
@@ -556,25 +738,45 @@ def main():
             datetime(2025, 4, 23).date()
         ]
         
-                # 如果有当前配置，使用配置中的日期（优先级最高）
-        current_dates = st.session_state.get('current_dates', None)
-        if current_dates:
+        # 检查是否需要应用AI推荐日期（最高优先级）
+        if hasattr(st.session_state, 'apply_ai_dates') and st.session_state.apply_ai_dates:
+            ai_dates = st.session_state.get('ai_recommended_dates', [])
+            if ai_dates and len(ai_dates) >= 5:
+                try:
+                    for i, date_str in enumerate(ai_dates[:5]):
+                        date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
+                        # 直接设置到session_state中，不设置default_dates避免冲突
+                        st.session_state[f"date_{i+1}"] = date_obj
+                    
+                    st.session_state.apply_ai_dates = False  # 重置标志
+                    st.success("✅ 已应用AI推荐日期！")
+                    print("应用成功")
+                    # st.rerun()
+                except Exception as e:
+                    st.warning(f"应用AI推荐日期失败: {e}")
+                    print("应用失败")
+        
+        # 如果有当前配置，使用配置中的日期
+        elif st.session_state.get('current_dates'):
+            current_dates = st.session_state.current_dates
             try:
                 for i, (key, date_str) in enumerate(current_dates.items()):
                     if i < len(default_dates):  # 确保不超出范围
                         date_obj = datetime.strptime(date_str, '%Y%m%d').date()
-                        default_dates[i] = date_obj
+                        # 直接设置到session_state中
+                        st.session_state[f"date_{i+1}"] = date_obj
             except Exception as e:
                 st.warning(f"加载完整配置的日期失败: {e}")
         
-        # 如果有保存的配置且用户选择加载，则使用保存的日期（仅当没有当前配置时）
+        # 如果有保存的配置且用户选择加载，则使用保存的日期
         elif (saved_config and 
             hasattr(st.session_state, 'load_saved_config') and 
             st.session_state.load_saved_config):
             try:
                 for i, (key, date_str) in enumerate(saved_config['dates'].items()):
                     date_obj = datetime.strptime(date_str, '%Y%m%d').date()
-                    default_dates[i] = date_obj
+                    # 直接设置到session_state中
+                    st.session_state[f"date_{i+1}"] = date_obj
                 st.session_state.load_saved_config = False  # 重置标志
                 st.success("✅ 已加载保存的日期配置！")
             except Exception as e:
@@ -588,9 +790,13 @@ def main():
             with col1:
                 st.write(f"{colors[i]} Day{i+1}")
             with col2:
+                # 使用session_state中的值，如果不存在则使用默认值
+                date_key = f"date_{i+1}"
+                if date_key not in st.session_state:
+                    st.session_state[date_key] = default_dates[i]
+                
                 selected_date = st.date_input(
                     f"日期{i+1}",
-                    value=default_dates[i],
                     key=f"date_{i+1}"
                 )
                 input_date[f'day{i+1}'] = selected_date.strftime('%Y%m%d')
@@ -602,22 +808,45 @@ def main():
         if st.session_state.get('current_security_type') or st.session_state.get('current_symbol') or st.session_state.get('current_dates'):
             if st.button("🔄 清除当前配置", use_container_width=True):
                 # 清除当前配置
-                keys_to_clear = ['current_security_type', 'current_symbol', 'current_dates']
+                keys_to_clear = [
+                    'current_security_type', 'current_symbol', 'current_dates',
+                    'ai_recommended_dates', 'ai_reasoning', 'ai_confidence'
+                ]
                 for key in keys_to_clear:
                     if key in st.session_state:
                         del st.session_state[key]
+                
+                # 同时清除日期选择器的session_state值，让它们回到默认状态
+                for i in range(5):
+                    date_key = f"date_{i+1}"
+                    if date_key in st.session_state:
+                        del st.session_state[date_key]
+                        
                 st.rerun()
         
         # 配置管理
         st.markdown("---")
         st.subheader("💾 配置管理")
         
-        # 显示已保存的配置
+        # 显示全局设置状态
         configs = load_user_configs()
-        if configs:
-            st.write(f"已保存 {len(configs)} 个配置:")
+        global_settings = configs.get('global_settings', {})
+        if global_settings:
+            with st.expander("⚙️ 全局设置"):
+                if 'api_key' in global_settings:
+                    masked_key = global_settings['api_key'][:8] + "..." + global_settings['api_key'][-4:] if len(global_settings['api_key']) > 12 else "***"
+                    st.write(f"**API密钥**: {masked_key}")
+                if 'default_model' in global_settings:
+                    st.write(f"**默认AI模型**: {global_settings['default_model']}")
+                if 'save_time' in global_settings:
+                    st.write(f"**保存时间**: {global_settings['save_time']}")
+        
+        # 显示已保存的配置
+        security_configs = {k: v for k, v in configs.items() if k != 'global_settings'}
+        if security_configs:
+            st.write(f"已保存 {len(security_configs)} 个证券配置:")
             
-            for config_key, config in configs.items():
+            for config_key, config in security_configs.items():
                 with st.expander(f"{config['security_name']} ({config['symbol']})"):
                     st.write(f"**类型**: {config['security_type']}")
                     st.write(f"**保存时间**: {config['save_time']}")
@@ -638,6 +867,12 @@ def main():
                                 if key in st.session_state:
                                     del st.session_state[key]
                             
+                            # 清除日期选择器的session_state值
+                            for i in range(5):
+                                date_key = f"date_{i+1}"
+                                if date_key in st.session_state:
+                                    del st.session_state[date_key]
+                            
                             # 设置加载标志，在页面重新渲染时会被处理
                             st.session_state.load_full_config = {
                                 'security_type': config['security_type'],
@@ -654,7 +889,7 @@ def main():
                             else:
                                 st.error("删除配置失败！")
         else:
-            st.info("暂无保存的配置")
+            st.info("暂无保存的证券配置")
     
     # 主要内容区域
     if analyze_button:
@@ -730,9 +965,27 @@ def main():
                - 股票：如 000001、300001、001215等
                - ETF：如 159915、159919、510300等
                - 指数：如 000001（上证指数）、399001（深证成指）等
-            3. 选择5个关键的分析日期
+            3. **🤖 AI智能推荐（推荐）** 或 手动选择5个关键的分析日期
             4. 点击「开始分析」按钮
             5. 查看K线图和KDAS指标走势
+            
+            ### 🤖 AI智能推荐功能（新增）
+            - **多模型支持**: 支持DeepSeek-R1、Gemini-2.5等多种先进AI模型
+            - **智能分析**: 基于大语言模型分析证券的技术指标、价格趋势、成交量等数据
+            - **专业推荐**: 遵循KDAS交易体系原理，推荐最佳的关键日期
+            - **技术依据**: 识别重要的价格突破点、趋势转折点、异常成交量日期等
+            - **降低门槛**: 新手用户无需深入了解技术分析，即可获得专业的日期配置
+            - **API配置**: 需要配置OpenAI API密钥（sk-开头的密钥）
+            - **模型选择**: 可根据需求选择不同的AI模型进行分析
+            - **置信度**: AI会评估推荐的置信度（高/中/低）
+            - **备用方案**: 当AI推荐失败时，自动提供智能备用日期方案
+            - **💾 配置记忆**: 点击"保存配置"按钮可保存API密钥和模型选择，刷新页面不会丢失
+            - **🔒 本地存储**: API密钥安全保存在本地配置文件中，仅您可以访问
+            
+            ### 🔧 支持的AI模型
+            - **deepseek-r1**: DeepSeek推理模型，逻辑推理能力强
+            - **gemini-2.5-flash-preview-05-20**: Google Gemini快速版本，响应速度快
+            - **gemini-2.5-pro-preview-03-25**: Google Gemini专业版本，分析更深入
             
             ### 💾 记忆功能（新增）
             - **自动保存**: 每次分析后会自动保存当前证券代码及其对应的日期配置
