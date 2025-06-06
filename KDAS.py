@@ -111,6 +111,55 @@ def delete_api_key():
         return save_user_configs(configs)
     return False
 
+def save_multi_chart_config(global_dates, securities):
+    """保存多图看板配置"""
+    configs = load_user_configs()
+    
+    # 确保存在全局设置部分
+    if 'global_settings' not in configs:
+        configs['global_settings'] = {}
+    
+    # 保存多图看板配置
+    configs['global_settings']['multi_chart_config'] = {
+        'global_dates': [date.isoformat() for date in global_dates],
+        'securities': securities,
+        'save_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
+    
+    return save_user_configs(configs)
+
+def load_multi_chart_config():
+    """加载多图看板配置"""
+    configs = load_user_configs()
+    global_settings = configs.get('global_settings', {})
+    multi_config = global_settings.get('multi_chart_config', None)
+    
+    if multi_config:
+        # 转换日期格式
+        global_dates = [datetime.fromisoformat(date_str).date() for date_str in multi_config['global_dates']]
+        securities = multi_config['securities']
+        return global_dates, securities
+    
+    # 返回默认配置
+    default_dates = [
+        datetime(2024, 9, 24).date(),
+        datetime(2024, 11, 7).date(),
+        datetime(2024, 12, 17).date(),
+        datetime(2025, 4, 7).date(),
+        datetime(2025, 4, 23).date()
+    ]
+    
+    default_securities = [
+        {'type': '股票', 'symbol': '001215', 'use_global_dates': True, 'dates': None, 'config_key': None},
+        {'type': 'ETF', 'symbol': '159915', 'use_global_dates': True, 'dates': None, 'config_key': None},
+        {'type': '指数', 'symbol': '000001', 'use_global_dates': True, 'dates': None, 'config_key': None},
+        {'type': '股票', 'symbol': '', 'use_global_dates': True, 'dates': None, 'config_key': None},
+        {'type': 'ETF', 'symbol': '', 'use_global_dates': True, 'dates': None, 'config_key': None},
+        {'type': '指数', 'symbol': '', 'use_global_dates': True, 'dates': None, 'config_key': None},
+    ]
+    
+    return default_dates, default_securities
+
 @st.cache_data
 def load_stock_info():
     """缓存加载股票信息"""
@@ -331,15 +380,15 @@ def create_interactive_chart(df, input_date, info_df, security_type="股票", sy
     
     # 查找证券名称
     # 调试：检查info_df的结构
-    print(f"Debug - symbol_code: {symbol_code}")
-    print(f"Debug - info_df columns: {info_df.columns.tolist()}")
-    print(f"Debug - info_df first few rows:")
-    print(info_df.head())
+    # print(f"Debug - symbol_code: {symbol_code}")
+    # print(f"Debug - info_df columns: {info_df.columns.tolist()}")
+    # print(f"Debug - info_df first few rows:")
+    # print(info_df.head())
     
     security_name = info_df[info_df["code"] == symbol_code]["name"].values
     security_name = security_name[0] if len(security_name) > 0 else f"未知{security_type}"
     
-    print(f"Debug - found security_name: {security_name}")  # 调试信息
+    # print(f"Debug - found security_name: {security_name}")  # 调试信息
     
     # 添加K线图到第一行
     fig.add_trace(go.Candlestick(
@@ -348,11 +397,12 @@ def create_interactive_chart(df, input_date, info_df, security_type="股票", sy
         high=df['最高'],
         low=df['最低'],
         close=df['收盘'],
-        name=f'{security_name}',  # 使用证券名称
-        increasing_line_color='#FF4444',  # 红涨
-        decreasing_line_color='#00AA00',  # 绿跌
+        name=f'{security_name}',
+        increasing_line_color='#FF4444',
+        decreasing_line_color='#00AA00',
         increasing_fillcolor='#FF4444',
-        decreasing_fillcolor='#00AA00'
+        decreasing_fillcolor='#00AA00',
+        showlegend=False
     ), row=1, col=1)
     
     # KDAS线条颜色配置
@@ -373,12 +423,8 @@ def create_interactive_chart(df, input_date, info_df, security_type="股票", sy
                 x=df.loc[mask, '日期'],
                 y=df.loc[mask, f'KDAS{value}'],
                 mode='lines',
-                name=f'KDAS {value}',
-                line=dict(
-                    color=kdas_colors.get(key, "#000000"), 
-                    width=2.5,
-                    dash='solid'
-                ),
+                name=f'D{key[-1]}',
+                line=dict(color=kdas_colors.get(key, "#000000"), width=2, dash='solid'),
                 opacity=0.8
             ), row=1, col=1)
     
@@ -522,492 +568,884 @@ def create_interactive_chart(df, input_date, info_df, security_type="股票", sy
     
     return fig
 
+def create_mini_chart(df, input_date, info_df, security_type="股票", symbol_code=None):
+    """创建紧凑型交互式图表，用于多图看板"""
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.1,
+        subplot_titles=(None, None), # No subplot titles
+        row_heights=[0.7, 0.3]
+    )
+    
+    df = df.sort_values('日期').reset_index(drop=True)
+    df = df.dropna(subset=['开盘', '收盘', '最高', '最低', '成交量', '成交额'])
+    df = df[df['成交量'] > 0].reset_index(drop=True)
+    df = df[(df['开盘'] > 0) & (df['收盘'] > 0) & (df['最高'] > 0) & (df['最低'] > 0)].reset_index(drop=True)
+    df = df[df['最高'] >= df['最低']].reset_index(drop=True)
+
+    symbol_code = str(symbol_code).split('.')[0]
+    security_name_series = info_df[info_df["code"] == symbol_code]["name"]
+    security_name = security_name_series.values[0] if len(security_name_series) > 0 else f"未知{security_type}"
+    
+    fig.add_trace(go.Candlestick(
+        x=df['日期'],
+        open=df['开盘'],
+        high=df['最高'],
+        low=df['最低'],
+        close=df['收盘'],
+        name=f'{security_name}',
+        increasing_line_color='#FF4444',
+        decreasing_line_color='#00AA00',
+        increasing_fillcolor='#FF4444',
+        decreasing_fillcolor='#00AA00',
+        showlegend=False
+    ), row=1, col=1)
+    
+    kdas_colors = {
+        'day1': "#FF0000", 'day2': "#0000FF", 'day3': "#00FF00",
+        'day4': "#FF00FF", 'day5': "#FFA500",
+    }
+    
+    for key, value in input_date.items():
+        if f'KDAS{value}' in df.columns:
+            mask = df[f'KDAS{value}'].notna()
+            fig.add_trace(go.Scatter(
+                x=df.loc[mask, '日期'],
+                y=df.loc[mask, f'KDAS{value}'],
+                mode='lines',
+                name=f'D{key[-1]}',
+                line=dict(color=kdas_colors.get(key, "#000000"), width=2, dash='solid'),
+                opacity=0.8
+            ), row=1, col=1)
+    
+    # 计算当前支撑位和压力位
+    current_price = df['收盘'].iloc[-1]
+    support_levels = []  # 支撑位（价格下方的KDAS值）
+    resistance_levels = []  # 压力位（价格上方的KDAS值）
+    
+    for key, value in input_date.items():
+        if f'KDAS{value}' in df.columns:
+            # 获取最新的KDAS值
+            kdas_series = df[f'KDAS{value}'].dropna()
+            if not kdas_series.empty:
+                latest_kdas = kdas_series.iloc[-1]
+                if latest_kdas < current_price:
+                    support_levels.append((latest_kdas, f"支撑位: ¥{latest_kdas:.3f}"))
+                elif latest_kdas > current_price:
+                    resistance_levels.append((latest_kdas, f"压力位: ¥{latest_kdas:.3f}"))
+    
+    # 对支撑位和压力位进行排序
+    support_levels.sort(key=lambda x: x[0], reverse=True)  # 支撑位从高到低排序
+    resistance_levels.sort(key=lambda x: x[0])  # 压力位从低到高排序
+    
+    # 创建图例文本
+    legend_text = []
+    legend_text.append(f"📊 当前价格: ¥{current_price:.3f}")
+    legend_text.append("━━━━━━━━━━━━━━━━")
+    
+    if resistance_levels:
+        legend_text.append("🔴 压力位:")
+        for _, text in resistance_levels:
+            legend_text.append(f"  {text}")
+    
+    if support_levels:
+        legend_text.append("🟢 支撑位:")
+        for _, text in support_levels:
+            legend_text.append(f"  {text}")
+    
+    if not resistance_levels and not support_levels:
+        legend_text.append("暂无明显支撑/压力位")
+    
+    fig.update_layout(
+        title={
+            'text': f"{security_name} ({symbol_code})",
+            'x': 0.5,
+            'xanchor': 'center',
+            'font': {'size': 14}
+        },
+        height=400,
+        xaxis_rangeslider_visible=False,
+        showlegend=False,
+        hovermode='x unified',
+        template='plotly_white',
+        margin=dict(l=40, r=20, t=70, b=40),
+        annotations=[
+            dict(
+                x=0.02,
+                y=0.98,
+                xref="paper",
+                yref="paper",
+                text="<br>".join(legend_text),
+                showarrow=False,
+                bgcolor='rgba(255, 255, 255, 0.9)',
+                bordercolor='rgba(0, 0, 0, 0.3)',
+                borderwidth=1,
+                font=dict(size=9, family="monospace"),  # 使用更小的字体以适应小图
+                align="left",
+                xanchor="left",
+                yanchor="top"
+            )
+        ]
+    )
+    
+    start_date, end_date = df['日期'].min().date(), df['日期'].max().date()
+    non_trading_dates = get_non_trading_dates(start_date, end_date)
+    
+    rangebreaks_config = [dict(bounds=["sat", "mon"])]
+    if non_trading_dates:
+        rangebreaks_config.append(dict(values=non_trading_dates))
+    
+    fig.update_xaxes(rangebreaks=rangebreaks_config)
+    fig.update_yaxes(title_text=None, row=1, col=1)
+    fig.update_yaxes(title_text=None, row=2, col=1)
+    
+    # 设置价格和KDAS的综合Y轴范围
+    # 获取价格范围
+    price_min = df[['开盘', '收盘', '最高', '最低']].min().min()
+    price_max = df[['开盘', '收盘', '最高', '最低']].max().max()
+    
+    # 获取KDAS范围
+    kdas_values = []
+    for key, value in input_date.items():
+        if f'KDAS{value}' in df.columns:
+            kdas_values.extend(df[f'KDAS{value}'].dropna().tolist())
+    
+    # 计算综合范围
+    if kdas_values:
+        kdas_min, kdas_max = min(kdas_values), max(kdas_values)
+        combined_min = min(price_min, kdas_min)
+        combined_max = max(price_max, kdas_max)
+    else:
+        combined_min = price_min
+        combined_max = price_max
+    
+    # 设置Y轴范围，留出10%的余量
+    range_span = combined_max - combined_min
+    fig.update_yaxes(
+        range=[combined_min - range_span * 0.1, combined_max + range_span * 0.1],
+        row=1, col=1
+    )
+    
+    return fig
+
 def main():
     st.set_page_config(page_title="KDAS证券分析工具", layout="wide")
     
     st.title("📈 KDAS证券分析工具")
     st.markdown("---")
     
-    # 检查是否需要加载完整配置
-    load_full_config = st.session_state.get('load_full_config', None)
-    if load_full_config:
-        st.success(f"✅ 已加载完整配置: {load_full_config['symbol']}")
-        # 将配置信息设置到session_state中，用于组件显示
-        st.session_state.current_security_type = load_full_config['security_type']
-        st.session_state.current_symbol = load_full_config['symbol']
-        st.session_state.current_dates = load_full_config['dates']
-        # 清除load_full_config标志
-        st.session_state.load_full_config = None
-    
-    # 侧边栏配置
     with st.sidebar:
-        st.header("📊 配置参数")
-        
-        # 证券类型选择 - 如果有当前配置，则使用配置中的类型
-        current_security_type = st.session_state.get('current_security_type', None)
-        if current_security_type:
-            security_type_options = ["股票", "ETF", "指数"]
-            default_type_index = security_type_options.index(current_security_type)
-        else:
-            default_type_index = 0
-            
-        security_type = st.selectbox(
-            "证券类型",
-            ["股票", "ETF", "指数"],
-            index=default_type_index,
-            help="选择要分析的证券类型"
+        st.header("模式选择")
+        app_mode = st.radio(
+            "选择分析模式",
+            ("单图精细分析", "多图概览看板"),
+            key='app_mode_selection',
+            horizontal=True,
         )
-        
-        # 根据证券类型加载对应的信息
-        if security_type == "股票":
-            info_df = load_stock_info()
-            default_symbol = "001215"
-            help_text = "请输入6位股票代码"
-        elif security_type == "ETF":
-            info_df = load_etf_info()
-            default_symbol = "159915"
-            help_text = "请输入6位ETF代码"
-        else:  # 指数
-            info_df = load_index_info()
-            default_symbol = "000001"
-            help_text = "请输入6位指数代码"
-        
-        # 如果有当前配置，使用配置中的代码
-        current_symbol = st.session_state.get('current_symbol', None)
-        if current_symbol:
-            default_symbol = current_symbol
-        
-        # 证券代码选择
-        symbol = st.text_input(f"{security_type}代码", value=default_symbol, help=help_text)
-        
-        # 检查是否有保存的配置
-        saved_config = None
-        if symbol:
-            saved_config = get_saved_config(symbol, security_type)
-            if saved_config:
-                st.success(f"💾 找到保存的配置: {saved_config['security_name']}")
-                if st.button("🔄 加载保存的日期配置", use_container_width=True):
-                    st.session_state.load_saved_config = True
-                    st.rerun()
-        
-        st.subheader("KDAS计算起始日期")
-        
-        # AI智能推荐功能
-        if AI_ADVISOR_AVAILABLE and symbol:
-            st.markdown("#### 🤖 AI智能推荐")
-            
-            # 加载保存的API密钥和模型配置
-            saved_api_key, saved_model = load_api_key()
-            
-            # API密钥配置
-            api_key_input = st.text_input(
-                "OpenAI API密钥", 
-                value=saved_api_key,  # 使用保存的API密钥作为默认值
-                type="password", 
-                help="输入您的OpenAI API密钥以使用AI智能推荐功能",
-                placeholder="sk-..."
-            )
-            
-            # 获取当前模型列表并确定默认选择
-            model_options = ["deepseek-r1", "gemini-2.5-flash-preview-05-20", "gemini-2.5-pro-preview-03-25"]
-            default_model_index = 0
-            if saved_model in model_options:
-                default_model_index = model_options.index(saved_model)
-            
-            # AI模型选择
-            ai_model = st.selectbox(
-                "AI模型选择",
-                model_options,
-                index=default_model_index,
-                help="选择要使用的AI模型"
-            )
-            
-            # API密钥保存/删除按钮
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("💾 保存配置", help="保存API密钥和模型选择，下次无需重新输入"):
-                    if api_key_input.strip():
-                        if save_api_key(api_key_input.strip(), ai_model):
-                            st.success("✅ 配置已保存！")
-                        else:
-                            st.error("❌ 保存失败，请重试")
-                    else:
-                        st.warning("⚠️ 请先输入API密钥")
-            
-            with col2:
-                if saved_api_key and st.button("🗑️ 清除配置", help="删除保存的API密钥"):
-                    if delete_api_key():
-                        st.success("✅ 配置已清除！")
-                        st.rerun()  # 刷新页面以清除输入框
-                    else:
-                        st.error("❌ 清除失败，请重试")
-            
-            if api_key_input:
-                os.environ['OPENAI_API_KEY'] = api_key_input
-            
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                ai_recommend_btn = st.button(
-                    "🧠 AI智能推荐日期", 
-                    help="基于技术分析和KDAS体系原理智能推荐最佳日期",
-                    use_container_width=True
-                )
-            with col2:
-                show_analysis = st.checkbox("显示分析", help="显示详细的技术分析过程")
-            
-            # 处理AI推荐
-            if ai_recommend_btn:
-                # 清除上一次的AI推荐结果，避免混淆
-                for key in ['ai_recommended_dates', 'ai_reasoning', 'ai_confidence']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-                
-                if not api_key_input and not os.getenv('OPENAI_API_KEY'):
-                    st.error("⚠️ 请先配置OpenAI API密钥")
-                else:
-                    with st.spinner("🤖 AI正在分析技术数据并推荐日期..."):
-                        try:
-                            # 获取数据进行分析
-                            temp_dates = {f'day{i+1}': (datetime.now() - timedelta(days=30*i)).strftime('%Y%m%d') for i in range(5)}
-                            analysis_data = get_security_data(symbol, temp_dates, security_type)
-                            
-                            if not analysis_data.empty:
-                                # 获取证券名称
-                                security_name = info_df[info_df["code"] == str(symbol)]["name"].values
-                                security_name = security_name[0] if len(security_name) > 0 else f"未知{security_type}"
-                                
-                                # 调用AI顾问（传入用户选择的模型）
-                                advisor = get_ai_advisor(api_key_input, ai_model)
-                                if advisor:
-                                    result = advisor.generate_kdas_recommendation(
-                                        analysis_data, symbol, security_name, security_type
-                                    )
-                                    
-                                    if result['success']:
-                                        st.success("✅ AI推荐完成！")
-                                        # 保存推荐日期到session_state，然后重新运行以显示结果
-                                        st.session_state.ai_recommended_dates = result['dates']
-                                        st.session_state.ai_reasoning = result['reasoning']
-                                        st.session_state.ai_confidence = result.get('confidence', 'medium')
-                                        st.rerun()
-                                    
-                                    else:
-                                        st.error(f"❌ AI推荐失败: {result['error']}")
-                                        if 'fallback_dates' in result and result['fallback_dates']:
-                                            st.info("💡 使用智能备用日期方案")
-                                            st.session_state.ai_recommended_dates = result['fallback_dates']
-                                            # 使用备用方案也需要重新运行
-                                            st.rerun()
-                                else:
-                                    st.error("❌ 无法初始化AI顾问，请检查API密钥")
-                            else:
-                                st.error("❌ 无法获取数据进行分析")
-                                
-                        except Exception as e:
-                            st.error(f"❌ AI推荐过程出现错误: {str(e)}")
-                            st.info("💡 建议检查网络连接和API密钥配置")
-            
-            # 如果session_state中存在AI推荐的日期，则显示它们及应用按钮
-            if 'ai_recommended_dates' in st.session_state:
-                st.markdown("---")
-                confidence_emoji = {'high': '🟢', 'medium': '🟡', 'low': '🟠'}
-                confidence = st.session_state.get('ai_confidence', 'medium')
-                
-                st.info(f"**AI模型**: {ai_model}")
-                st.info(f"**推荐置信度**: {confidence_emoji.get(confidence, '🟡')} {confidence.upper()}")
-                st.info(f"**推荐日期**: {st.session_state.ai_recommended_dates}")
-                
-                if show_analysis and 'ai_reasoning' in st.session_state:
-                    with st.expander("📊 详细分析过程"):
-                        st.markdown(f"**{ai_model} 分析理由:**")
-                        st.text(st.session_state.ai_reasoning)
-                
-                # 应用推荐按钮
-                if st.button("📅 应用AI推荐日期", type="primary", use_container_width=True):
-                    st.session_state.apply_ai_dates = True
-                    st.rerun()
+        st.markdown("---")
 
-            st.markdown("---")
+    if app_mode == "单图精细分析":
+        # 检查是否需要加载完整配置
+        load_full_config = st.session_state.get('load_full_config', None)
+        if load_full_config:
+            st.success(f"✅ 已加载完整配置: {load_full_config['symbol']}")
+            # 将配置信息设置到session_state中，用于组件显示
+            st.session_state.current_security_type = load_full_config['security_type']
+            st.session_state.current_symbol = load_full_config['symbol']
+            st.session_state.current_dates = load_full_config['dates']
+            # 清除load_full_config标志
+            st.session_state.load_full_config = None
         
-        # 使用日期选择器
-        default_dates = [
-            datetime(2024, 9, 24).date(),
-            datetime(2024, 11, 7).date(),
-            datetime(2024, 12, 17).date(),
-            datetime(2025, 4, 7).date(),
-            datetime(2025, 4, 23).date()
-        ]
-        
-        # 检查是否需要应用AI推荐日期（最高优先级）
-        if hasattr(st.session_state, 'apply_ai_dates') and st.session_state.apply_ai_dates:
-            ai_dates = st.session_state.get('ai_recommended_dates', [])
-            if ai_dates and len(ai_dates) >= 5:
-                try:
-                    for i, date_str in enumerate(ai_dates[:5]):
-                        date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
-                        # 直接设置到session_state中，不设置default_dates避免冲突
-                        st.session_state[f"date_{i+1}"] = date_obj
+        # 侧边栏配置
+        with st.sidebar:
+            st.header("📊 配置参数")
+            
+            # 证券类型选择 - 如果有当前配置，则使用配置中的类型
+            current_security_type = st.session_state.get('current_security_type', None)
+            if current_security_type:
+                security_type_options = ["股票", "ETF", "指数"]
+                default_type_index = security_type_options.index(current_security_type)
+            else:
+                default_type_index = 0
+                
+            security_type = st.selectbox(
+                "证券类型",
+                ["股票", "ETF", "指数"],
+                index=default_type_index,
+                help="选择要分析的证券类型"
+            )
+            
+            # 根据证券类型加载对应的信息
+            if security_type == "股票":
+                info_df = load_stock_info()
+                default_symbol = "001215"
+                help_text = "请输入6位股票代码"
+            elif security_type == "ETF":
+                info_df = load_etf_info()
+                default_symbol = "159915"
+                help_text = "请输入6位ETF代码"
+            else:  # 指数
+                info_df = load_index_info()
+                default_symbol = "000001"
+                help_text = "请输入6位指数代码"
+            
+            # 如果有当前配置，使用配置中的代码
+            current_symbol = st.session_state.get('current_symbol', None)
+            if current_symbol:
+                default_symbol = current_symbol
+            
+            # 证券代码选择
+            symbol = st.text_input(f"{security_type}代码", value=default_symbol, help=help_text)
+            
+            # 检查是否有保存的配置
+            saved_config = None
+            if symbol:
+                saved_config = get_saved_config(symbol, security_type)
+                if saved_config:
+                    st.success(f"💾 找到保存的配置: {saved_config['security_name']}")
+                    if st.button("🔄 加载保存的日期配置", use_container_width=True):
+                        st.session_state.load_saved_config = True
+                        st.rerun()
+            
+            st.subheader("KDAS计算起始日期")
+            
+            # AI智能推荐功能
+            if AI_ADVISOR_AVAILABLE and symbol:
+                st.markdown("#### 🤖 AI智能推荐")
+                
+                # 加载保存的API密钥和模型配置
+                saved_api_key, saved_model = load_api_key()
+                
+                # API密钥配置
+                api_key_input = st.text_input(
+                    "OpenAI API密钥", 
+                    value=saved_api_key,  # 使用保存的API密钥作为默认值
+                    type="password", 
+                    help="输入您的OpenAI API密钥以使用AI智能推荐功能",
+                    placeholder="sk-..."
+                )
+                
+                # 获取当前模型列表并确定默认选择
+                model_options = ["deepseek-r1", "gemini-2.5-flash-preview-05-20", "gemini-2.5-pro-preview-03-25"]
+                default_model_index = 0
+                if saved_model in model_options:
+                    default_model_index = model_options.index(saved_model)
+                
+                # AI模型选择
+                ai_model = st.selectbox(
+                    "AI模型选择",
+                    model_options,
+                    index=default_model_index,
+                    help="选择要使用的AI模型"
+                )
+                
+                # API密钥保存/删除按钮
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("💾 保存配置", help="保存API密钥和模型选择，下次无需重新输入"):
+                        if api_key_input.strip():
+                            if save_api_key(api_key_input.strip(), ai_model):
+                                st.success("✅ 配置已保存！")
+                            else:
+                                st.error("❌ 保存失败，请重试")
+                        else:
+                            st.warning("⚠️ 请先输入API密钥")
+                
+                with col2:
+                    if saved_api_key and st.button("🗑️ 清除配置", help="删除保存的API密钥"):
+                        if delete_api_key():
+                            st.success("✅ 配置已清除！")
+                            st.rerun()  # 刷新页面以清除输入框
+                        else:
+                            st.error("❌ 清除失败，请重试")
+                
+                if api_key_input:
+                    os.environ['OPENAI_API_KEY'] = api_key_input
+                
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    ai_recommend_btn = st.button(
+                        "🧠 AI智能推荐日期", 
+                        help="基于技术分析和KDAS体系原理智能推荐最佳日期",
+                        use_container_width=True
+                    )
+                with col2:
+                    show_analysis = st.checkbox("显示分析", help="显示详细的技术分析过程")
+                
+                # 处理AI推荐
+                if ai_recommend_btn:
+                    # 清除上一次的AI推荐结果，避免混淆
+                    for key in ['ai_recommended_dates', 'ai_reasoning', 'ai_confidence']:
+                        if key in st.session_state:
+                            del st.session_state[key]
                     
-                    st.session_state.apply_ai_dates = False  # 重置标志
-                    st.success("✅ 已应用AI推荐日期！")
-                    print("应用成功")
-                    # st.rerun()
+                    if not api_key_input and not os.getenv('OPENAI_API_KEY'):
+                        st.error("⚠️ 请先配置OpenAI API密钥")
+                    else:
+                        with st.spinner("🤖 AI正在分析技术数据并推荐日期..."):
+                            try:
+                                # 获取数据进行分析
+                                temp_dates = {f'day{i+1}': (datetime.now() - timedelta(days=30*i)).strftime('%Y%m%d') for i in range(5)}
+                                analysis_data = get_security_data(symbol, temp_dates, security_type)
+                                
+                                if not analysis_data.empty:
+                                    # 获取证券名称
+                                    security_name = info_df[info_df["code"] == str(symbol)]["name"].values
+                                    security_name = security_name[0] if len(security_name) > 0 else f"未知{security_type}"
+                                    
+                                    # 调用AI顾问（传入用户选择的模型）
+                                    advisor = get_ai_advisor(api_key_input, ai_model)
+                                    if advisor:
+                                        result = advisor.generate_kdas_recommendation(
+                                            analysis_data, symbol, security_name, security_type
+                                        )
+                                        
+                                        if result['success']:
+                                            st.success("✅ AI推荐完成！")
+                                            # 保存推荐日期到session_state，然后重新运行以显示结果
+                                            st.session_state.ai_recommended_dates = result['dates']
+                                            st.session_state.ai_reasoning = result['reasoning']
+                                            st.session_state.ai_confidence = result.get('confidence', 'medium')
+                                            st.rerun()
+                                        
+                                        else:
+                                            st.error(f"❌ AI推荐失败: {result['error']}")
+                                            if 'fallback_dates' in result and result['fallback_dates']:
+                                                st.info("💡 使用智能备用日期方案")
+                                                st.session_state.ai_recommended_dates = result['fallback_dates']
+                                                # 使用备用方案也需要重新运行
+                                                st.rerun()
+                                    else:
+                                        st.error("❌ 无法初始化AI顾问，请检查API密钥")
+                                else:
+                                    st.error("❌ 无法获取数据进行分析")
+                                    
+                            except Exception as e:
+                                st.error(f"❌ AI推荐过程出现错误: {str(e)}")
+                                st.info("💡 建议检查网络连接和API密钥配置")
+                    
+                # 如果session_state中存在AI推荐的日期，则显示它们及应用按钮
+                if 'ai_recommended_dates' in st.session_state:
+                    st.markdown("---")
+                    confidence_emoji = {'high': '🟢', 'medium': '🟡', 'low': '🟠'}
+                    confidence = st.session_state.get('ai_confidence', 'medium')
+                    
+                    st.info(f"**AI模型**: {ai_model}")
+                    st.info(f"**推荐置信度**: {confidence_emoji.get(confidence, '🟡')} {confidence.upper()}")
+                    st.info(f"**推荐日期**: {st.session_state.ai_recommended_dates}")
+                    
+                    if show_analysis and 'ai_reasoning' in st.session_state:
+                        with st.expander("📊 详细分析过程"):
+                            st.markdown(f"**{ai_model} 分析理由:**")
+                            st.text(st.session_state.ai_reasoning)
+                    
+                    # 应用推荐按钮
+                    if st.button("📅 应用AI推荐日期", type="primary", use_container_width=True):
+                        st.session_state.apply_ai_dates = True
+                        st.rerun()
+
+                st.markdown("---")
+            
+            # 使用日期选择器
+            default_dates = [
+                datetime(2024, 9, 24).date(),
+                datetime(2024, 11, 7).date(),
+                datetime(2024, 12, 17).date(),
+                datetime(2025, 4, 7).date(),
+                datetime(2025, 4, 23).date()
+            ]
+            
+            # 检查是否需要应用AI推荐日期（最高优先级）
+            if hasattr(st.session_state, 'apply_ai_dates') and st.session_state.apply_ai_dates:
+                ai_dates = st.session_state.get('ai_recommended_dates', [])
+                if ai_dates and len(ai_dates) >= 5:
+                    try:
+                        for i, date_str in enumerate(ai_dates[:5]):
+                            date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
+                            # 直接设置到session_state中，不设置default_dates避免冲突
+                            st.session_state[f"date_{i+1}"] = date_obj
+                        
+                        st.session_state.apply_ai_dates = False  # 重置标志
+                        st.success("✅ 已应用AI推荐日期！")
+                    except Exception as e:
+                        st.warning(f"应用AI推荐日期失败: {e}")
+            
+            # 如果有当前配置，使用配置中的日期
+            elif st.session_state.get('current_dates'):
+                current_dates = st.session_state.current_dates
+                try:
+                    for i, (key, date_str) in enumerate(current_dates.items()):
+                        if i < len(default_dates):  # 确保不超出范围
+                            date_obj = datetime.strptime(date_str, '%Y%m%d').date()
+                            # 直接设置到session_state中
+                            st.session_state[f"date_{i+1}"] = date_obj
                 except Exception as e:
-                    st.warning(f"应用AI推荐日期失败: {e}")
-                    print("应用失败")
-        
-        # 如果有当前配置，使用配置中的日期
-        elif st.session_state.get('current_dates'):
-            current_dates = st.session_state.current_dates
-            try:
-                for i, (key, date_str) in enumerate(current_dates.items()):
-                    if i < len(default_dates):  # 确保不超出范围
+                    st.warning(f"加载完整配置的日期失败: {e}")
+            
+            # 如果有保存的配置且用户选择加载，则使用保存的日期
+            elif (saved_config and 
+                hasattr(st.session_state, 'load_saved_config') and 
+                st.session_state.load_saved_config):
+                try:
+                    for i, (key, date_str) in enumerate(saved_config['dates'].items()):
                         date_obj = datetime.strptime(date_str, '%Y%m%d').date()
                         # 直接设置到session_state中
                         st.session_state[f"date_{i+1}"] = date_obj
-            except Exception as e:
-                st.warning(f"加载完整配置的日期失败: {e}")
-        
-        # 如果有保存的配置且用户选择加载，则使用保存的日期
-        elif (saved_config and 
-            hasattr(st.session_state, 'load_saved_config') and 
-            st.session_state.load_saved_config):
-            try:
-                for i, (key, date_str) in enumerate(saved_config['dates'].items()):
-                    date_obj = datetime.strptime(date_str, '%Y%m%d').date()
-                    # 直接设置到session_state中
-                    st.session_state[f"date_{i+1}"] = date_obj
-                st.session_state.load_saved_config = False  # 重置标志
-                st.success("✅ 已加载保存的日期配置！")
-            except Exception as e:
-                st.warning(f"加载保存的日期配置失败: {e}")
-        
-        input_date = {}
-        colors = ["🔴", "🔵", "🟢", "🟣", "🟡"]
-        
-        for i in range(5):
-            col1, col2 = st.columns([1, 3])
-            with col1:
-                st.write(f"{colors[i]} Day{i+1}")
-            with col2:
-                # 使用session_state中的值，如果不存在则使用默认值
-                date_key = f"date_{i+1}"
-                if date_key not in st.session_state:
-                    st.session_state[date_key] = default_dates[i]
-                
-                selected_date = st.date_input(
-                    f"日期{i+1}",
-                    key=f"date_{i+1}"
-                )
-                input_date[f'day{i+1}'] = selected_date.strftime('%Y%m%d')
-        
-        # 分析按钮
-        analyze_button = st.button("🔍 开始分析", type="primary", use_container_width=True)
-        
-        # 如果当前有加载的配置，显示清除按钮
-        if st.session_state.get('current_security_type') or st.session_state.get('current_symbol') or st.session_state.get('current_dates'):
-            if st.button("🔄 清除当前配置", use_container_width=True):
-                # 清除当前配置
-                keys_to_clear = [
-                    'current_security_type', 'current_symbol', 'current_dates',
-                    'ai_recommended_dates', 'ai_reasoning', 'ai_confidence'
-                ]
-                for key in keys_to_clear:
-                    if key in st.session_state:
-                        del st.session_state[key]
-                
-                # 同时清除日期选择器的session_state值，让它们回到默认状态
-                for i in range(5):
-                    date_key = f"date_{i+1}"
-                    if date_key in st.session_state:
-                        del st.session_state[date_key]
-                        
-                st.rerun()
-        
-        # 配置管理
-        st.markdown("---")
-        st.subheader("💾 配置管理")
-        
-        # 显示全局设置状态
-        configs = load_user_configs()
-        global_settings = configs.get('global_settings', {})
-        if global_settings:
-            with st.expander("⚙️ 全局设置"):
-                if 'api_key' in global_settings:
-                    masked_key = global_settings['api_key'][:8] + "..." + global_settings['api_key'][-4:] if len(global_settings['api_key']) > 12 else "***"
-                    st.write(f"**API密钥**: {masked_key}")
-                if 'default_model' in global_settings:
-                    st.write(f"**默认AI模型**: {global_settings['default_model']}")
-                if 'save_time' in global_settings:
-                    st.write(f"**保存时间**: {global_settings['save_time']}")
-        
-        # 显示已保存的配置
-        security_configs = {k: v for k, v in configs.items() if k != 'global_settings'}
-        if security_configs:
-            st.write(f"已保存 {len(security_configs)} 个证券配置:")
+                    st.session_state.load_saved_config = False  # 重置标志
+                    st.success("✅ 已加载保存的日期配置！")
+                except Exception as e:
+                    st.warning(f"加载保存的日期配置失败: {e}")
             
-            for config_key, config in security_configs.items():
-                with st.expander(f"{config['security_name']} ({config['symbol']})"):
-                    st.write(f"**类型**: {config['security_type']}")
-                    st.write(f"**保存时间**: {config['save_time']}")
-                    st.write("**日期配置**:")
-                    for day_key, date_str in config['dates'].items():
-                        try:
-                            date_obj = datetime.strptime(date_str, '%Y%m%d').date()
-                            st.write(f"  - {day_key}: {date_obj}")
-                        except:
-                            st.write(f"  - {day_key}: {date_str}")
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button(f"📋 加载完整配置", key=f"load_full_{config_key}"):
-                            # 清除之前的配置状态
-                            keys_to_clear = ['current_security_type', 'current_symbol', 'current_dates', 'load_saved_config']
-                            for key in keys_to_clear:
-                                if key in st.session_state:
-                                    del st.session_state[key]
-                            
-                            # 清除日期选择器的session_state值
-                            for i in range(5):
-                                date_key = f"date_{i+1}"
-                                if date_key in st.session_state:
-                                    del st.session_state[date_key]
-                            
-                            # 设置加载标志，在页面重新渲染时会被处理
-                            st.session_state.load_full_config = {
-                                'security_type': config['security_type'],
-                                'symbol': config['symbol'],
-                                'dates': config['dates']
-                            }
-                            st.rerun()
-                    
-                    with col2:
-                        if st.button(f"🗑️ 删除配置", key=f"delete_{config_key}"):
-                            if delete_saved_config(config['symbol'], config['security_type']):
-                                st.success("配置已删除！")
-                                st.rerun()
-                            else:
-                                st.error("删除配置失败！")
-        else:
-            st.info("暂无保存的证券配置")
-    
-    # 主要内容区域
-    if analyze_button:
-        try:
-            with st.spinner(f"正在获取{security_type}数据..."):
-                # 获取证券数据
-                data = get_security_data(symbol, input_date, security_type)
-                
-                if data.empty:
-                    st.error(f"未找到该{security_type}的数据，请检查{security_type}代码是否正确。")
-                    return
-                
-                # 计算KDAS
-                processed_data = calculate_cumulative_vwap(data, input_date)
-                
-                # 显示证券基本信息
-                security_name = info_df[info_df["code"] == str(symbol)]["name"].values
-                security_name = security_name[0] if len(security_name) > 0 else f"未知{security_type}"
-                
-                col1, col2, col3, col4 = st.columns(4)
+            input_date = {}
+            colors = ["🔴", "🔵", "🟢", "🟣", "🟡"]
+            
+            for i in range(5):
+                col1, col2 = st.columns([1, 3])
                 with col1:
-                    st.metric(f"{security_type}名称", security_name)
+                    st.write(f"{colors[i]} Day{i+1}")
                 with col2:
-                    st.metric(f"{security_type}代码", symbol)
-                with col3:
-                    latest_price = processed_data['收盘'].iloc[-1]
-                    st.metric("最新收盘价", f"¥{latest_price:.3f}")
-                with col4:
-                    if len(processed_data) > 1:
-                        price_change = processed_data['收盘'].iloc[-1] - processed_data['收盘'].iloc[-2]
-                        st.metric("涨跌", f"¥{price_change:.3f}", delta=f"{(price_change/processed_data['收盘'].iloc[-2]*100):.3f}%")
-                    else:
-                        st.metric("涨跌", "暂无数据")
+                    # 使用session_state中的值，如果不存在则使用默认值
+                    date_key = f"date_{i+1}"
+                    if date_key not in st.session_state:
+                        st.session_state[date_key] = default_dates[i]
+                    
+                    selected_date = st.date_input(
+                        f"日期{i+1}",
+                        key=f"date_{i+1}"
+                    )
+                    input_date[f'day{i+1}'] = selected_date.strftime('%Y%m%d')
+            
+            # 分析按钮
+            analyze_button = st.button("🔍 开始分析", type="primary", use_container_width=True)
+            
+            # 如果当前有加载的配置，显示清除按钮
+            if st.session_state.get('current_security_type') or st.session_state.get('current_symbol') or st.session_state.get('current_dates'):
+                if st.button("🔄 清除当前配置", use_container_width=True):
+                    # 清除当前配置
+                    keys_to_clear = [
+                        'current_security_type', 'current_symbol', 'current_dates',
+                        'ai_recommended_dates', 'ai_reasoning', 'ai_confidence'
+                    ]
+                    for key in keys_to_clear:
+                        if key in st.session_state:
+                            del st.session_state[key]
+                    
+                    # 同时清除日期选择器的session_state值，让它们回到默认状态
+                    for i in range(5):
+                        date_key = f"date_{i+1}"
+                        if date_key in st.session_state:
+                            del st.session_state[date_key]
+                            
+                    st.rerun()
+            
+            # 配置管理
+            st.markdown("---")
+            st.subheader("💾 配置管理")
+            
+            # 显示全局设置状态
+            configs = load_user_configs()
+            global_settings = configs.get('global_settings', {})
+            if global_settings:
+                with st.expander("⚙️ 全局设置"):
+                    if 'api_key' in global_settings:
+                        masked_key = global_settings['api_key'][:8] + "..." + global_settings['api_key'][-4:] if len(global_settings['api_key']) > 12 else "***"
+                        st.write(f"**API密钥**: {masked_key}")
+                    if 'default_model' in global_settings:
+                        st.write(f"**默认AI模型**: {global_settings['default_model']}")
+                    if 'save_time' in global_settings:
+                        st.write(f"**保存时间**: {global_settings['save_time']}")
+            
+            # 显示已保存的配置
+            security_configs = {k: v for k, v in configs.items() if k != 'global_settings'}
+            if security_configs:
+                st.write(f"已保存 {len(security_configs)} 个证券配置:")
                 
-                st.markdown("---")
-                
-                # 创建并显示图表
-                fig = create_interactive_chart(processed_data, input_date, info_df, security_type, symbol)
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # 显示KDAS数据表
-                st.subheader("📋 KDAS数据详情")
-                
-                # 准备显示的列
-                display_cols = ['日期', '开盘', '收盘', '最高', '最低', '成交量', '成交额']
-                kdas_cols = [col for col in processed_data.columns if col.startswith('KDAS')]
-                display_cols.extend(kdas_cols)
-                
-                # 只显示最近的数据
-                recent_data = processed_data[display_cols].tail(20)
-                st.dataframe(recent_data, use_container_width=True)
-                
-                # 保存当前配置
-                if save_current_config(symbol, security_type, input_date, security_name):
-                    st.success("✅ 当前配置已自动保存，下次可直接加载！")
-                
-        except Exception as e:
-            st.error(f"分析过程中出现错误: {str(e)}")
-            st.info("请检查股票代码是否正确，或稍后重试。")
-    
-    else:
-        # 显示使用说明
-        st.info("👈 请在左侧边栏配置参数并点击「开始分析」按钮")
+                for config_key, config in security_configs.items():
+                    with st.expander(f"{config['security_name']} ({config['symbol']})"):
+                        st.write(f"**类型**: {config['security_type']}")
+                        st.write(f"**保存时间**: {config['save_time']}")
+                        st.write("**日期配置**:")
+                        for day_key, date_str in config['dates'].items():
+                            try:
+                                date_obj = datetime.strptime(date_str, '%Y%m%d').date()
+                                st.write(f"  - {day_key}: {date_obj}")
+                            except:
+                                st.write(f"  - {day_key}: {date_str}")
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.button(f"📋 加载完整配置", key=f"load_full_{config_key}"):
+                                # 清除之前的配置状态
+                                keys_to_clear = ['current_security_type', 'current_symbol', 'current_dates', 'load_saved_config']
+                                for key in keys_to_clear:
+                                    if key in st.session_state:
+                                        del st.session_state[key]
+                                
+                                # 清除日期选择器的session_state值
+                                for i in range(5):
+                                    date_key = f"date_{i+1}"
+                                    if date_key in st.session_state:
+                                        del st.session_state[date_key]
+                                
+                                # 设置加载标志，在页面重新渲染时会被处理
+                                st.session_state.load_full_config = {
+                                    'security_type': config['security_type'],
+                                    'symbol': config['symbol'],
+                                    'dates': config['dates']
+                                }
+                                st.rerun()
+                        
+                        with col2:
+                            if st.button(f"🗑️ 删除配置", key=f"delete_{config_key}"):
+                                if delete_saved_config(config['symbol'], config['security_type']):
+                                    st.success("配置已删除！")
+                                    st.rerun()
+                                else:
+                                    st.error("删除配置失败！")
+            else:
+                st.info("暂无保存的证券配置")
         
-        with st.expander("📖 使用说明"):
-            st.markdown("""
-            ### KDAS指标说明
-            KDAS（Key Date Average Settlement）是基于关键日期的累计成交量加权平均价格指标。
+        # 主要内容区域
+        if analyze_button:
+            try:
+                with st.spinner(f"正在获取{security_type}数据..."):
+                    # 获取证券数据
+                    data = get_security_data(symbol, input_date, security_type)
+                    
+                    if data.empty:
+                        st.error(f"未找到该{security_type}的数据，请检查{security_type}代码是否正确。")
+                        return
+                    
+                    # 计算KDAS
+                    processed_data = calculate_cumulative_vwap(data, input_date)
+                    
+                    # 显示证券基本信息
+                    security_name = info_df[info_df["code"] == str(symbol)]["name"].values
+                    security_name = security_name[0] if len(security_name) > 0 else f"未知{security_type}"
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric(f"{security_type}名称", security_name)
+                    with col2:
+                        st.metric(f"{security_type}代码", symbol)
+                    with col3:
+                        latest_price = processed_data['收盘'].iloc[-1]
+                        st.metric("最新收盘价", f"¥{latest_price:.3f}")
+                    with col4:
+                        if len(processed_data) > 1:
+                            price_change = processed_data['收盘'].iloc[-1] - processed_data['收盘'].iloc[-2]
+                            st.metric("涨跌", f"¥{price_change:.3f}", delta=f"{(price_change/processed_data['收盘'].iloc[-2]*100):.3f}%")
+                        else:
+                            st.metric("涨跌", "暂无数据")
+                    
+                    st.markdown("---")
+                    
+                    # 创建并显示图表
+                    fig = create_interactive_chart(processed_data, input_date, info_df, security_type, symbol)
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # 显示KDAS数据表
+                    st.subheader("📋 KDAS数据详情")
+                    
+                    # 准备显示的列
+                    display_cols = ['日期', '开盘', '收盘', '最高', '最低', '成交量', '成交额']
+                    kdas_cols = [col for col in processed_data.columns if col.startswith('KDAS')]
+                    display_cols.extend(kdas_cols)
+                    
+                    # 只显示最近的数据
+                    recent_data = processed_data[display_cols].tail(20)
+                    st.dataframe(recent_data, use_container_width=True)
+                    
+                    # 保存当前配置
+                    if save_current_config(symbol, security_type, input_date, security_name):
+                        st.success("✅ 当前配置已自动保存，下次可直接加载！")
+                    
+            except Exception as e:
+                st.error(f"分析过程中出现错误: {str(e)}")
+                st.info("请检查股票代码是否正确，或稍后重试。")
+        
+        else:
+            # 显示使用说明
+            st.info("👈 请在左侧边栏配置参数并点击「开始分析」按钮")
             
-            ### 使用步骤
-            1. 选择证券类型（股票、ETF、指数）
-            2. 输入对应的6位证券代码
-               - 股票：如 000001、300001、001215等
-               - ETF：如 159915、159919、510300等
-               - 指数：如 000001（上证指数）、399001（深证成指）等
-            3. **🤖 AI智能推荐（推荐）** 或 手动选择5个关键的分析日期
-            4. 点击「开始分析」按钮
-            5. 查看K线图和KDAS指标走势
+            with st.expander("📖 使用说明"):
+                st.markdown("""
+                ### KDAS指标说明
+                KDAS（Key Date Average Settlement）是基于关键日期的累计成交量加权平均价格指标。
+                
+                ### 使用步骤
+                1. 选择证券类型（股票、ETF、指数）
+                2. 输入对应的6位证券代码
+                   - 股票：如 000001、300001、001215等
+                   - ETF：如 159915、159919、510300等
+                   - 指数：如 000001（上证指数）、399001（深证成指）等
+                3. **🤖 AI智能推荐（推荐）** 或 手动选择5个关键的分析日期
+                4. 点击「开始分析」按钮
+                5. 查看K线图和KDAS指标走势
+                
+                ### 🤖 AI智能推荐功能（新增）
+                - **多模型支持**: 支持DeepSeek-R1、Gemini-2.5等多种先进AI模型
+                - **智能分析**: 基于大语言模型分析证券的技术指标、价格趋势、成交量等数据
+                - **专业推荐**: 遵循KDAS交易体系原理，推荐最佳的关键日期
+                - **技术依据**: 识别重要的价格突破点、趋势转折点、异常成交量日期等
+                - **降低门槛**: 新手用户无需深入了解技术分析，即可获得专业的日期配置
+                - **API配置**: 需要配置OpenAI API密钥（sk-开头的密钥）
+                - **模型选择**: 可根据需求选择不同的AI模型进行分析
+                - **置信度**: AI会评估推荐的置信度（高/中/低）
+                - **备用方案**: 当AI推荐失败时，自动提供智能备用日期方案
+                - **💾 配置记忆**: 点击"保存配置"按钮可保存API密钥和模型选择，刷新页面不会丢失
+                - **🔒 本地存储**: API密钥安全保存在本地配置文件中，仅您可以访问
+                
+                ### 🔧 支持的AI模型
+                - **deepseek-r1**: DeepSeek推理模型，逻辑推理能力强
+                - **gemini-2.5-flash-preview-05-20**: Google Gemini快速版本，响应速度快
+                - **gemini-2.5-pro-preview-03-25**: Google Gemini专业版本，分析更深入
+                
+                ### 💾 记忆功能（新增）
+                - **自动保存**: 每次分析后会自动保存当前证券代码及其对应的日期配置
+                - **智能识别**: 输入之前分析过的证券代码时，会自动提示有保存的配置
+                - **部分加载**: 点击"加载保存的日期配置"按钮仅恢复日期设置
+                - **完整加载**: 点击"📋 加载完整配置"按钮一键切换证券类型、代码和所有日期
+                - **配置重置**: 加载配置后可点击"🔄 清除当前配置"按钮恢复默认状态
+                - **配置管理**: 在侧边栏底部可以查看和删除已保存的所有配置
+                - **数据持久化**: 配置信息保存在本地文件中，重启应用也不会丢失
+                
+                ### 图表说明
+                - **K线图**: 显示证券的开高低收价格走势
+                - **KDAS线**: 不同颜色表示从不同日期开始计算的KDAS值
+                - **成交量**: 显示每日的成交量情况
+                - **图例**: 位于图表左上角，可以点击控制显示/隐藏
+                - **时间轴优化**: 使用新浪财经官方交易日历数据，精确跳过非交易日，确保x轴连续显示
+                
+                ### 支持的证券类型
+                - **股票**: A股上市公司股票
+                - **ETF**: 交易型开放式指数基金
+                - **指数**: 沪深各类股票指数
+                """)
+    
+    else: # 多图概览看板
+        with st.sidebar:
+            st.header("📊 多图看板配置")
+            st.subheader("全局KDAS计算起始日期")
+
+            # 定义全局日期和证券配置 - 从保存的配置中加载
+            if 'multi_chart_global_dates' not in st.session_state or 'multi_securities' not in st.session_state:
+                # 加载保存的配置
+                saved_dates, saved_securities = load_multi_chart_config()
+                st.session_state.multi_chart_global_dates = saved_dates
+                st.session_state.multi_securities = saved_securities
+
+            global_input_dates = {}
+            colors = ["🔴", "🔵", "🟢", "🟣", "🟡"]
+            dates_changed = False
             
-            ### 🤖 AI智能推荐功能（新增）
-            - **多模型支持**: 支持DeepSeek-R1、Gemini-2.5等多种先进AI模型
-            - **智能分析**: 基于大语言模型分析证券的技术指标、价格趋势、成交量等数据
-            - **专业推荐**: 遵循KDAS交易体系原理，推荐最佳的关键日期
-            - **技术依据**: 识别重要的价格突破点、趋势转折点、异常成交量日期等
-            - **降低门槛**: 新手用户无需深入了解技术分析，即可获得专业的日期配置
-            - **API配置**: 需要配置OpenAI API密钥（sk-开头的密钥）
-            - **模型选择**: 可根据需求选择不同的AI模型进行分析
-            - **置信度**: AI会评估推荐的置信度（高/中/低）
-            - **备用方案**: 当AI推荐失败时，自动提供智能备用日期方案
-            - **💾 配置记忆**: 点击"保存配置"按钮可保存API密钥和模型选择，刷新页面不会丢失
-            - **🔒 本地存储**: API密钥安全保存在本地配置文件中，仅您可以访问
+            for i in range(5):
+                selected_date = st.date_input(
+                    f"{colors[i]} 日期 {i+1}", 
+                    value=st.session_state.multi_chart_global_dates[i], 
+                    key=f"multi_global_date_{i+1}"
+                )
+                global_input_dates[f'day{i+1}'] = selected_date.strftime('%Y%m%d')
+                
+                # 检查日期是否发生变化
+                if st.session_state.multi_chart_global_dates[i] != selected_date:
+                    dates_changed = True
+                    st.session_state.multi_chart_global_dates[i] = selected_date
+
+            st.markdown("---")
+            st.subheader("证券配置 (最多6个)")
+
+            # 初始化每个图表的配置（已在上面从保存的配置中加载）
             
-            ### 🔧 支持的AI模型
-            - **deepseek-r1**: DeepSeek推理模型，逻辑推理能力强
-            - **gemini-2.5-flash-preview-05-20**: Google Gemini快速版本，响应速度快
-            - **gemini-2.5-pro-preview-03-25**: Google Gemini专业版本，分析更深入
+            # 加载所有已保存的配置用于下拉菜单
+            configs = load_user_configs()
+            security_configs = {k: v for k, v in configs.items() if k != 'global_settings'}
+            config_options = {k: f"{v['security_name']} ({v['symbol']})" for k, v in security_configs.items()}
+            options_list = [None] + list(config_options.keys())
+            format_func = lambda k: "选择一个配置..." if k is None else config_options[k]
             
-            ### 💾 记忆功能（新增）
-            - **自动保存**: 每次分析后会自动保存当前证券代码及其对应的日期配置
-            - **智能识别**: 输入之前分析过的证券代码时，会自动提示有保存的配置
-            - **部分加载**: 点击"加载保存的日期配置"按钮仅恢复日期设置
-            - **完整加载**: 点击"📋 加载完整配置"按钮一键切换证券类型、代码和所有日期
-            - **配置重置**: 加载配置后可点击"🔄 清除当前配置"按钮恢复默认状态
-            - **配置管理**: 在侧边栏底部可以查看和删除已保存的所有配置
-            - **数据持久化**: 配置信息保存在本地文件中，重启应用也不会丢失
+            securities_changed = False
             
-            ### 图表说明
-            - **K线图**: 显示证券的开高低收价格走势
-            - **KDAS线**: 不同颜色表示从不同日期开始计算的KDAS值
-            - **成交量**: 显示每日的成交量情况
-            - **图例**: 位于图表左上角，可以点击控制显示/隐藏
-            - **时间轴优化**: 使用新浪财经官方交易日历数据，精确跳过非交易日，确保x轴连续显示
+            for i in range(6):
+                with st.expander(f"图表 {i+1}", expanded=(i<3 or st.session_state.multi_securities[i]['symbol'] != '')):
+                    
+                    # 加载配置的下拉菜单
+                    selected_config_key = st.selectbox(
+                        "加载已存配置",
+                        options=options_list,
+                        format_func=format_func,
+                        index=options_list.index(st.session_state.multi_securities[i]['config_key']) if st.session_state.multi_securities[i]['config_key'] in options_list else 0,
+                        key=f'multi_load_{i}',
+                    )
+
+                    # 当用户从下拉菜单选择新配置时，更新状态
+                    if selected_config_key != st.session_state.multi_securities[i]['config_key']:
+                        securities_changed = True
+                        if selected_config_key:
+                            config = security_configs[selected_config_key]
+                            st.session_state.multi_securities[i].update({
+                                'type': config['security_type'],
+                                'symbol': config['symbol'],
+                                'dates': config['dates'],
+                                'use_global_dates': False,
+                                'config_key': selected_config_key
+                            })
+                        else:  # 用户选择 "None"
+                            st.session_state.multi_securities[i].update({
+                                'use_global_dates': True,
+                                'config_key': None
+                            })
+                        # 立即保存配置
+                        save_multi_chart_config(st.session_state.multi_chart_global_dates, st.session_state.multi_securities)
+                        st.rerun()
+
+                    # 证券类型和代码输入
+                    sec_type = st.selectbox(
+                        f"证券类型", ["股票", "ETF", "指数"],
+                        index=["股票", "ETF", "指数"].index(st.session_state.multi_securities[i]['type']),
+                        key=f"multi_type_{i}"
+                    )
+                    symbol = st.text_input(
+                        f"证券代码", 
+                        value=st.session_state.multi_securities[i]['symbol'], 
+                        key=f"multi_symbol_{i}"
+                    ).strip()
+
+                    # 是否使用全局日期的复选框
+                    use_global = st.checkbox(
+                        "使用全局日期",
+                        value=st.session_state.multi_securities[i]['use_global_dates'],
+                        key=f'multi_global_date_cb_{i}'
+                    )
+                    
+                    # 检查配置是否发生变化并更新状态（来自手动输入）
+                    if (st.session_state.multi_securities[i]['type'] != sec_type or 
+                        st.session_state.multi_securities[i]['symbol'] != symbol or 
+                        st.session_state.multi_securities[i]['use_global_dates'] != use_global):
+                        securities_changed = True
+                    
+                    st.session_state.multi_securities[i]['type'] = sec_type
+                    st.session_state.multi_securities[i]['symbol'] = symbol
+                    st.session_state.multi_securities[i]['use_global_dates'] = use_global
+                    
+                    # 如果使用特定日期，则显示提示
+                    if not st.session_state.multi_securities[i]['use_global_dates'] and st.session_state.multi_securities[i]['dates']:
+                        dates_str = ", ".join([d.replace("2024", "24").replace("2025", "25") for d in st.session_state.multi_securities[i]['dates'].values()])
+                        st.info(f"特定日期: {dates_str}", icon="🗓️")
+
+
+            # 自动保存配置（如果有变化）
+            if dates_changed or securities_changed:
+                save_multi_chart_config(st.session_state.multi_chart_global_dates, st.session_state.multi_securities)
+                # 只在底部显示一个小的状态指示器，不显示成功消息以避免干扰用户体验
+
+            st.markdown("---")
             
-            ### 支持的证券类型
-            - **股票**: A股上市公司股票
-            - **ETF**: 交易型开放式指数基金
-            - **指数**: 沪深各类股票指数
-            """)
+            # 手动保存和重置按钮
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("💾 保存配置", use_container_width=True):
+                    if save_multi_chart_config(st.session_state.multi_chart_global_dates, st.session_state.multi_securities):
+                        st.success("✅ 配置保存成功")
+                    else:
+                        st.error("❌ 配置保存失败")
+            
+            with col2:
+                if st.button("🔄 重置为默认", use_container_width=True):
+                    # 重置为默认配置
+                    default_dates, default_securities = load_multi_chart_config.__defaults__[0], load_multi_chart_config.__defaults__[1]
+                    # 获取默认配置（重新调用函数但不使用保存的配置）
+                    st.session_state.multi_chart_global_dates = [
+                        datetime(2024, 9, 24).date(),
+                        datetime(2024, 11, 7).date(),
+                        datetime(2024, 12, 17).date(),
+                        datetime(2025, 4, 7).date(),
+                        datetime(2025, 4, 23).date()
+                    ]
+                    st.session_state.multi_securities = [
+                        {'type': '股票', 'symbol': '001215', 'use_global_dates': True, 'dates': None, 'config_key': None},
+                        {'type': 'ETF', 'symbol': '159915', 'use_global_dates': True, 'dates': None, 'config_key': None},
+                        {'type': '指数', 'symbol': '000001', 'use_global_dates': True, 'dates': None, 'config_key': None},
+                        {'type': '股票', 'symbol': '', 'use_global_dates': True, 'dates': None, 'config_key': None},
+                        {'type': 'ETF', 'symbol': '', 'use_global_dates': True, 'dates': None, 'config_key': None},
+                        {'type': '指数', 'symbol': '', 'use_global_dates': True, 'dates': None, 'config_key': None},
+                    ]
+                    if save_multi_chart_config(st.session_state.multi_chart_global_dates, st.session_state.multi_securities):
+                        st.success("✅ 已重置为默认配置")
+                        st.rerun()
+                    else:
+                        st.error("❌ 重置失败")
+
+            analyze_button = st.button("🔍 更新看板", type="primary", use_container_width=True)
+            
+            # 显示最后保存时间
+            configs = load_user_configs()
+            if 'global_settings' in configs and 'multi_chart_config' in configs['global_settings']:
+                save_time = configs['global_settings']['multi_chart_config'].get('save_time', '未知')
+                st.caption(f"💾 最后保存: {save_time}")
+
+        st.header("多图概览看板")
+        st.info('在左侧配置需要同时监控的证券（最多6个），所有图表将使用相同的KDAS日期。配置完成后，点击"更新看板"以加载图表。')
+        st.success('💾 配置自动保存：您的多图看板配置会自动保存，重启或刷新后自动恢复到上次的设置。', icon="✨")
+        
+        if 'charts_generated' not in st.session_state:
+            st.session_state.charts_generated = False
+
+        if analyze_button:
+            st.session_state.charts_generated = True
+
+        if st.session_state.charts_generated:
+            stock_info_df = load_stock_info()
+            etf_info_df = load_etf_info()
+            index_info_df = load_index_info()
+            info_map = {"股票": stock_info_df, "ETF": etf_info_df, "指数": index_info_df}
+
+            col_defs = [1, 1, 1]
+            row1 = st.columns(col_defs)
+            row2 = st.columns(col_defs)
+            plot_positions = row1 + row2
+
+            for i, pos in enumerate(plot_positions):
+                config = st.session_state.multi_securities[i]
+                symbol = config['symbol']
+                sec_type = config['type']
+
+                with pos:
+                    if symbol:
+                        try:
+                            # 确定当前图表使用的日期
+                            if config['use_global_dates']:
+                                dates_to_use = global_input_dates
+                            elif config['dates']:
+                                dates_to_use = config['dates']
+                            else: # Fallback
+                                dates_to_use = global_input_dates
+                                
+                            with st.spinner(f"加载 {sec_type} {symbol}..."):
+                                info_df = info_map[sec_type]
+                                data = get_security_data(symbol, dates_to_use, sec_type)
+                                if data.empty:
+                                    st.warning(f"无数据: {symbol}")
+                                    continue
+                                
+                                processed_data = calculate_cumulative_vwap(data, dates_to_use)
+                                fig = create_mini_chart(processed_data, dates_to_use, info_df, sec_type, symbol)
+                                st.plotly_chart(fig, use_container_width=True)
+
+                        except Exception:
+                            st.error(f"分析 {symbol} 失败")
+                    else:
+                        st.markdown(f"<div style='height: 400px; display: flex; align-items: center; justify-content: center; background-color: #f0f2f6; border-radius: 10px; text-align: center; color: grey;'>图表 {i+1}<br>未配置</div>", unsafe_allow_html=True)
+        else:
+            col_defs = [1, 1, 1]
+            row1 = st.columns(col_defs)
+            row2 = st.columns(col_defs)
+            plot_positions = row1 + row2
+            for i, pos in enumerate(plot_positions):
+                with pos:
+                    st.markdown(f"<div style='height: 400px; display: flex; align-items: center; justify-content: center; background-color: #f0f2f6; border-radius: 10px; text-align: center; color: grey;'>图表 {i+1}<br>等待分析...</div>", unsafe_allow_html=True)
+
 
 if __name__ == "__main__":
     # 检测是否通过streamlit运行
