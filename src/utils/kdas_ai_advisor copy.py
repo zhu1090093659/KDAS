@@ -8,6 +8,92 @@ from typing import List, Dict, Tuple, Optional
 import streamlit as st
 import asyncio
 
+"""
+KDAS智能分析系统 - 使用说明
+
+这个模块提供了一个完整的KDAS（Key Date Average Settlement）智能分析系统，
+能够根据证券类型和代码自动进行日期推荐和状态分析。
+
+主要功能：
+1. 自动获取证券数据（股票、ETF）
+2. AI智能推荐KDAS关键日期
+3. 计算KDAS指标
+4. 分析当前KDAS交易状态
+5. 支持单个和批量分析
+
+快速开始：
+
+# 单个证券分析
+from kdas_ai_advisor import analyze_security_kdas
+import asyncio
+
+async def main():
+    result = await analyze_security_kdas(
+        security_type="股票",  # 或 "ETF"
+        symbol="000001",      # 证券代码
+        api_key="your-api-key",
+        model="deepseek-r1"   # 可选，默认为deepseek-r1
+    )
+    
+    if result['success']:
+        print("推荐日期:", result['recommended_dates'])
+        print("分析结果:", result['analysis']['analysis'])
+    else:
+        print("分析失败:", result['error'])
+
+asyncio.run(main())
+
+# 批量分析
+from kdas_ai_advisor import batch_analyze_securities
+
+async def batch_main():
+    securities = [
+        {"security_type": "股票", "symbol": "000001"},
+        {"security_type": "ETF", "symbol": "159915"}
+    ]
+    
+    results = await batch_analyze_securities(securities, "your-api-key")
+    for result in results:
+        if result['success']:
+            print(f"{result['security_info']['name']}: {result['recommended_dates']}")
+
+asyncio.run(batch_main())
+
+返回结果结构：
+{
+    'success': True/False,
+    'security_info': {
+        'symbol': '证券代码',
+        'name': '证券名称', 
+        'type': '证券类型'
+    },
+    'recommended_dates': ['2024-01-01', '2024-02-01', ...],  # AI推荐的5个日期
+    'input_dates': {'day1': '20240101', ...},  # 用于KDAS计算的日期格式
+    'recommendation': {  # 日期推荐详情
+        'success': True,
+        'dates': [...],
+        'reasoning': '推荐理由',
+        'confidence': 'high/medium/low'
+    },
+    'analysis': {  # KDAS状态分析
+        'success': True,
+        'analysis': 'JSON格式的详细分析结果'
+    },
+    'data_summary': {
+        'total_records': 数据条数,
+        'date_range': '数据时间范围',
+        'current_price': 当前价格
+    }
+}
+
+注意事项：
+1. 需要有效的AI API密钥
+2. 需要安装akshare库用于获取证券数据
+3. 首次运行会下载证券基础信息，可能需要一些时间
+4. 支持的证券类型：股票、ETF
+5. 所有函数都是异步的，需要使用await调用
+"""
+
 def safe_json_convert(obj):
     """安全地转换数据类型以支持JSON序列化"""
     if isinstance(obj, dict):
@@ -821,21 +907,26 @@ KDAS系统特征：
         
         return prompt
 
-    async def analyze_all_async(self, df: pd.DataFrame, symbol: str, security_name: str, security_type: str, input_dates: Optional[Dict] = None) -> Dict:
+    async def analyze_all_async(self, security_type: str, symbol: str, api_key: str, model: str = "deepseek-r1") -> Dict:
         """
-        异步并发执行日期推荐和状态分析，提升整体效率
+        根据证券类型和代码自动进行完整的KDAS分析
         
         Args:
-            df: 价格数据DataFrame
+            security_type: 证券类型 ("股票" 或 "ETF")
             symbol: 证券代码
-            security_name: 证券名称  
-            security_type: 证券类型
-            input_dates: 可选的KDAS计算日期，如果提供则进行状态分析，否则只进行日期推荐
+            api_key: AI API密钥
+            model: AI模型名称，默认为"deepseek-r1"
             
         Returns:
-            包含所有分析结果的字典
+            包含推荐日期和分析结果的字典
         """
-        if not self.api_key:
+        # 更新API密钥和模型
+        self.api_key = api_key
+        self.model = model
+        if self.api_key:
+            self.client = OpenAI(api_key=self.api_key, base_url="https://chatwithai.icu/v1")
+            self.async_client = AsyncOpenAI(api_key=self.api_key, base_url="https://chatwithai.icu/v1")
+        else:
             return {
                 'success': False,
                 'error': 'AI API密钥未配置',
@@ -844,84 +935,277 @@ KDAS系统特征：
             }
         
         try:
-            tasks = []
+            # 1. 获取证券信息
+            security_name = self._get_security_name(symbol, security_type)
             
-            # 总是进行日期推荐
-            recommendation_task = self.generate_kdas_recommendation_async(df, symbol, security_name, security_type)
-            tasks.append(('recommendation', recommendation_task))
+            # 2. 获取证券数据 - 使用默认的时间范围
+            default_dates = self._generate_default_dates()
+            df = self._get_security_data_internal(symbol, default_dates, security_type)
             
-            # 如果提供了input_dates，则进行状态分析
-            if input_dates:
-                analysis_task = self.analyze_kdas_state_async(df, input_dates, symbol, security_name, security_type)
-                tasks.append(('analysis', analysis_task))
+            if df.empty:
+                return {
+                    'success': False,
+                    'error': f'未找到该{security_type}的数据，请检查{security_type}代码是否正确',
+                    'recommendation': None,
+                    'analysis': None
+                }
             
-            # 并发执行所有任务
-            results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
+            # 3. 先进行日期推荐
+            recommendation_result = await self.generate_kdas_recommendation_async(
+                df, symbol, security_name, security_type
+            )
             
-            # 组织结果
-            response = {
+            if not recommendation_result.get('success', False):
+                return {
+                    'success': False,
+                    'error': f'日期推荐失败: {recommendation_result.get("error", "未知错误")}',
+                    'recommendation': recommendation_result,
+                    'analysis': None
+                }
+            
+            # 4. 使用推荐的日期计算KDAS
+            recommended_dates = recommendation_result.get('dates', [])
+            if not recommended_dates:
+                return {
+                    'success': False,
+                    'error': '未获得有效的推荐日期',
+                    'recommendation': recommendation_result,
+                    'analysis': None
+                }
+            
+            # 转换日期格式为KDAS计算所需的格式
+            input_dates = {}
+            for i, date_str in enumerate(recommended_dates[:5], 1):
+                # 将YYYY-MM-DD格式转换为YYYYMMDD格式
+                formatted_date = date_str.replace('-', '')
+                input_dates[f'day{i}'] = formatted_date
+            
+            # 重新获取数据以确保包含推荐日期的范围
+            df_with_kdas = self._get_security_data_internal(symbol, input_dates, security_type)
+            
+            if df_with_kdas.empty:
+                return {
+                    'success': False,
+                    'error': '重新获取数据失败',
+                    'recommendation': recommendation_result,
+                    'analysis': None
+                }
+            
+            # 5. 计算KDAS
+            df_processed = self._calculate_cumulative_vwap(df_with_kdas, input_dates)
+            
+            # 6. 进行KDAS状态分析
+            analysis_result = await self.analyze_kdas_state_async(
+                df_processed, input_dates, symbol, security_name, security_type
+            )
+            
+            return {
                 'success': True,
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'recommendation': None,
-                'analysis': None
+                'security_info': {
+                    'symbol': symbol,
+                    'name': security_name,
+                    'type': security_type
+                },
+                'recommended_dates': recommended_dates,
+                'input_dates': input_dates,
+                'recommendation': recommendation_result,
+                'analysis': analysis_result,
+                'data_summary': {
+                    'total_records': len(df_processed),
+                    'date_range': f"{df_processed['日期'].iloc[0].strftime('%Y-%m-%d')} 至 {df_processed['日期'].iloc[-1].strftime('%Y-%m-%d')}",
+                    'current_price': float(df_processed['收盘'].iloc[-1])
+                }
             }
-            
-            for i, (task_name, _) in enumerate(tasks):
-                result = results[i]
-                if isinstance(result, Exception):
-                    response[task_name] = {
-                        'success': False,
-                        'error': f'{task_name}任务失败: {str(result)}'
-                    }
-                else:
-                    response[task_name] = result
-            
-            return response
             
         except Exception as e:
             return {
                 'success': False,
-                'error': f'并发分析失败: {str(e)}',
+                'error': f'完整分析失败: {str(e)}',
                 'recommendation': None,
                 'analysis': None
             }
+    
+    def _get_security_name(self, symbol: str, security_type: str) -> str:
+        """获取证券名称"""
+        try:
+            import akshare as ak
+            
+            # 清理代码格式
+            symbol = symbol.split('.')[0]
+            
+            if security_type == "股票":
+                # 尝试从本地文件获取
+                if os.path.exists('shares/A股全部股票代码.csv'):
+                    stock_info_df = pd.read_csv('shares/A股全部股票代码.csv', dtype={0: str})
+                    if '股票代码' in stock_info_df.columns and '股票名称' in stock_info_df.columns:
+                        stock_info_df = stock_info_df.rename(columns={"股票代码": "code", "股票名称": "name"})
+                else:
+                    stock_info_df = ak.stock_info_a_code_name()
+                    stock_info_df = stock_info_df.rename(columns={"股票代码": "code", "股票名称": "name"})
+                
+                name_series = stock_info_df[stock_info_df["code"] == symbol]["name"]
+                return name_series.values[0] if len(name_series) > 0 else f"未知股票"
+                
+            elif security_type == "ETF":
+                # 尝试从本地文件获取
+                if os.path.exists('etfs/A股全部ETF代码.csv'):
+                    etf_info_df = pd.read_csv('etfs/A股全部ETF代码.csv', dtype={0: str})
+                else:
+                    etf_info_df = ak.fund_etf_spot_em()
+                    etf_info_df = etf_info_df[['代码', '名称']].drop_duplicates().rename(columns={"代码": "code", "名称": "name"})
+                
+                name_series = etf_info_df[etf_info_df["code"] == symbol]["name"]
+                return name_series.values[0] if len(name_series) > 0 else f"未知ETF"
+                
+            else:
+                return f"未知{security_type}"
+                
+        except Exception as e:
+            return f"未知{security_type}"
+    
+    def _generate_default_dates(self) -> Dict:
+        """生成默认的日期范围用于数据获取"""
+        # 生成一个较大的时间范围以确保能获取足够的历史数据
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=365)  # 一年的数据
+        
+        return {
+            'day1': start_date.strftime('%Y%m%d'),
+            'day2': (start_date + timedelta(days=90)).strftime('%Y%m%d'),
+            'day3': (start_date + timedelta(days=180)).strftime('%Y%m%d'),
+            'day4': (start_date + timedelta(days=270)).strftime('%Y%m%d'),
+            'day5': end_date.strftime('%Y%m%d')
+        }
+    
+    def _get_security_data_internal(self, symbol: str, input_date: Dict, security_type: str = "股票") -> pd.DataFrame:
+        """内部数据获取函数，复用KDAS.py中的逻辑"""
+        try:
+            import akshare as ak
+            
+            # 转换代码格式（如300328.SZ -> 300328）
+            symbol = symbol.split('.')[0]
+            start_date = min(input_date.values())
+            today = datetime.now().strftime('%Y%m%d')
+            
+            # 根据证券类型选择文件夹和API
+            if security_type == "股票":
+                folder = 'shares'
+                api_func = lambda: ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=start_date, adjust="qfq")
+                api_func_update = lambda last_date: ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=last_date, adjust="qfq")
+            elif security_type == "ETF":
+                folder = 'etfs'
+                api_func = lambda: ak.fund_etf_hist_em(symbol=symbol, period="daily", start_date=start_date, adjust="qfq")
+                api_func_update = lambda last_date: ak.fund_etf_hist_em(symbol=symbol, period="daily", start_date=last_date, adjust="qfq")
+            elif security_type == "指数":
+                folder = 'stocks'
+                api_func = lambda: ak.stock_zh_index_daily(symbol=symbol, start_date=start_date)
+                api_func_update = lambda last_date: ak.stock_zh_index_daily(symbol=symbol, start_date=last_date)
+            else:
+                raise ValueError(f"不支持的证券类型: {security_type}")
+            
+            # 确保文件夹存在
+            os.makedirs(folder, exist_ok=True)
+            file_path = f'{folder}/{symbol}.csv'
+            
+            if os.path.exists(file_path):
+                df = pd.read_csv(file_path)
+                df['日期'] = pd.to_datetime(df['日期'])
+                
+                # 转换start_date为Timestamp以便比较
+                start_date_ts = pd.to_datetime(start_date)
+                if not (df['日期'] == start_date_ts).any():
+                    df = api_func()
+                    if not df.empty:
+                        # 确保日期列格式正确
+                        df['日期'] = pd.to_datetime(df['日期'])
+                        df.to_csv(file_path, index=False)
+                else:
+                    # 检查是否需要更新数据
+                    last_date_in_df = df['日期'].iloc[-1]
+                    today_ts = pd.to_datetime(today)
+                    if last_date_in_df < today_ts:
+                        df_add = api_func_update(last_date_in_df.strftime('%Y%m%d'))
+                        if not df_add.empty:
+                            # 确保新数据的日期列格式正确
+                            df_add['日期'] = pd.to_datetime(df_add['日期'])
+                            df.drop(index=df.index[-1], inplace=True)
+                            df = pd.concat([df, df_add], ignore_index=True)
+                            # 去重并排序
+                            df = df.drop_duplicates(subset=['日期']).sort_values('日期').reset_index(drop=True)
+                            df.to_csv(file_path, index=False)
+            else:
+                df = api_func()
+                if not df.empty:
+                    # 确保日期列格式正确
+                    df['日期'] = pd.to_datetime(df['日期'])
+                    df.to_csv(file_path, index=False)
+            
+            # 确保数据不为空且格式正确
+            if df.empty:
+                return df
+                
+            # 基本数据清理 - 确保日期列是Timestamp格式
+            df['日期'] = pd.to_datetime(df['日期'])
+            df = df.sort_values('日期').reset_index(drop=True)
+            
+            # 标准化列名，确保一致性
+            if security_type == "指数" and '股票代码' not in df.columns:
+                # 指数数据可能没有股票代码列，需要添加
+                df['股票代码'] = symbol
+            
+            return df
+            
+        except Exception as e:
+            raise Exception(f"获取证券数据失败: {str(e)}")
+    
+    def _calculate_cumulative_vwap(self, df: pd.DataFrame, input_date: Dict) -> pd.DataFrame:
+        """计算KDAS，复用KDAS.py中的逻辑"""
+        df = df.copy()
+        df['日期'] = pd.to_datetime(df['日期'])
+        
+        for key, value in input_date.items():
+            target_date = datetime.strptime(value, "%Y%m%d").date()
+            start_idx = df[df['日期'].dt.date == target_date].index
+            if len(start_idx) > 0:
+                start_idx = start_idx[0]
+                # 初始化列为NaN
+                df[f'累计成交额{value}'] = pd.Series(dtype=float)
+                df[f'累计成交量{value}'] = pd.Series(dtype=float)
+                df[f'KDAS{value}'] = pd.Series(dtype=float)
+                
+                # 只对从start_idx开始的行进行累计计算
+                df.loc[start_idx:, f'累计成交额{value}'] = df.loc[start_idx:, '成交额'].cumsum()
+                df.loc[start_idx:, f'累计成交量{value}'] = df.loc[start_idx:, '成交量'].cumsum()
+                df.loc[start_idx:, f'KDAS{value}'] = (df.loc[start_idx:, f'累计成交额{value}'] / df.loc[start_idx:, f'累计成交量{value}'] / 100).round(3)
+        
+        return df
 
-    async def batch_analyze_securities_async(self, securities_data: List[Dict]) -> List[Dict]:
+    async def batch_analyze_securities_async(self, securities_list: List[Dict], api_key: str, model: str = "deepseek-r1") -> List[Dict]:
         """
-        批量异步分析多个证券，提升多图看板的效率
+        批量异步分析多个证券
         
         Args:
-            securities_data: 证券数据列表，每个元素包含：
-                - df: DataFrame
-                - symbol: str
-                - security_name: str
-                - security_type: str
-                - input_dates: Dict (可选)
+            securities_list: 证券列表，每个元素包含：
+                - security_type: str ("股票" 或 "ETF")
+                - symbol: str (证券代码)
+            api_key: AI API密钥
+            model: AI模型名称，默认为"deepseek-r1"
                 
         Returns:
             包含所有证券分析结果的列表
         """
-        if not self.api_key:
-            return [{
-                'success': False,
-                'error': 'AI API密钥未配置',
-                'symbol': data.get('symbol', '未知'),
-                'recommendation': None,
-                'analysis': None
-            } for data in securities_data]
-        
         try:
             # 为每个证券创建分析任务
             tasks = []
-            for data in securities_data:
+            for security_info in securities_list:
                 task = self.analyze_all_async(
-                    df=data['df'],
-                    symbol=data['symbol'],
-                    security_name=data['security_name'],
-                    security_type=data['security_type'],
-                    input_dates=data.get('input_dates', None)
+                    security_type=security_info['security_type'],
+                    symbol=security_info['symbol'],
+                    api_key=api_key,
+                    model=model
                 )
-                tasks.append((data['symbol'], task))
+                tasks.append((security_info['symbol'], task))
             
             # 并发执行所有任务
             results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
@@ -939,7 +1223,6 @@ KDAS系统特征：
                         'analysis': None
                     })
                 else:
-                    result['symbol'] = symbol
                     final_results.append(result)
             
             return final_results
@@ -948,10 +1231,59 @@ KDAS系统特征：
             return [{
                 'success': False,
                 'error': f'批量分析失败: {str(e)}',
-                'symbol': data.get('symbol', '未知'),
+                'symbol': security.get('symbol', '未知'),
                 'recommendation': None,
                 'analysis': None
-            } for data in securities_data]
+            } for security in securities_list]
+
+# 便捷使用函数
+async def analyze_security_kdas(security_type: str, symbol: str, api_key: str, model: str = "deepseek-r1") -> Dict:
+    """
+    便捷的证券KDAS分析函数
+    
+    Args:
+        security_type: 证券类型 ("股票" 或 "ETF")
+        symbol: 证券代码
+        api_key: AI API密钥
+        model: AI模型名称，默认为"deepseek-r1"
+        
+    Returns:
+        包含推荐日期和分析结果的字典
+        
+    Example:
+        # 分析单个股票
+        result = await analyze_security_kdas("股票", "000001", "your-api-key")
+        
+        # 分析ETF
+        result = await analyze_security_kdas("ETF", "159915", "your-api-key", "gpt-4")
+    """
+    advisor = KDASAIAdvisor()
+    return await advisor.analyze_all_async(security_type, symbol, api_key, model)
+
+async def batch_analyze_securities(securities_list: List[Dict], api_key: str, model: str = "deepseek-r1") -> List[Dict]:
+    """
+    批量分析多个证券的便捷函数
+    
+    Args:
+        securities_list: 证券列表，每个元素包含：
+            - security_type: str ("股票" 或 "ETF")
+            - symbol: str (证券代码)
+        api_key: AI API密钥
+        model: AI模型名称，默认为"deepseek-r1"
+        
+    Returns:
+        包含所有证券分析结果的列表
+        
+    Example:
+        securities = [
+            {"security_type": "股票", "symbol": "000001"},
+            {"security_type": "ETF", "symbol": "159915"},
+            {"security_type": "股票", "symbol": "000858"}
+        ]
+        results = await batch_analyze_securities(securities, "your-api-key")
+    """
+    advisor = KDASAIAdvisor()
+    return await advisor.batch_analyze_securities_async(securities_list, api_key, model)
 
 def get_ai_advisor(api_key: str = None, model: str = "deepseek-r1") -> Optional[KDASAIAdvisor]:
     """获取KDAS AI顾问实例"""

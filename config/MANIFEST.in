@@ -1,0 +1,12 @@
+include README.md
+include requirements.txt
+include setup.py
+include KDAS_AI_使用说明.md
+include 异步功能说明.md
+include ai_config_example.md
+recursive-include kdas *.py
+recursive-include kdas *.md
+recursive-include kdas *.txt
+recursive-exclude kdas __pycache__
+recursive-exclude kdas *.pyc
+recursive-exclude kdas *.pyo 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-KDAS股票分析工具启动脚本 (根目录版本)
+KDAS股票分析工具启动脚本
 运行命令: python run_app.py
 """
 
@@ -21,10 +21,9 @@ def run_streamlit_app():
         print("✅ Streamlit安装完成")
     
     # 检查KDAS.py文件是否存在
-    kdas_file = os.path.join(os.path.dirname(__file__), 'src', 'app', 'KDAS.py')
+    kdas_file = os.path.join(os.path.dirname(__file__), 'KDAS.py')
     if not os.path.exists(kdas_file):
         print("❌ 未找到KDAS.py文件")
-        print(f"期望路径: {kdas_file}")
         return
     
     print("🚀 启动KDAS股票分析工具...")

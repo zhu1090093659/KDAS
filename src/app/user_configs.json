@@ -17,13 +17,13 @@
     "security_type": "股票",
     "security_name": "千味央厨",
     "dates": {
-      "day1": "20250317",
-      "day2": "20250407",
-      "day3": "20250410",
-      "day4": "20250417",
-      "day5": "20250523"
+      "day1": "20240924",
+      "day2": "20241107",
+      "day3": "20241217",
+      "day4": "20250407",
+      "day5": "20250423"
     },
-    "save_time": "2025-06-06 22:49:23"
+    "save_time": "2025-06-07 14:57:52"
   },
   "ETF_159869": {
     "symbol": "159869",
@@ -39,7 +39,7 @@
     "save_time": "2025-06-06 22:53:43"
   },
   "global_settings": {
-    "save_time": "2025-06-06 22:28:21",
+    "save_time": "2025-06-07 16:01:14",
     "api_key": "sk-OI98X2iylUhYtncA518f4c7dEa0746A290D590B90c941d01",
     "default_model": "deepseek-r1",
     "multi_chart_config": {
@@ -132,20 +132,21 @@
       ],
       "save_time": "2025-06-06 15:26:00"
     },
-    "ai_analysis_enabled": true
+    "ai_analysis_enabled": true,
+    "ai_date_recommendation_enabled": true
   },
   "股票_301101": {
     "symbol": "301101",
     "security_type": "股票",
     "security_name": "明月镜片",
     "dates": {
-      "day1": "20240924",
-      "day2": "20250312",
-      "day3": "20250417",
-      "day4": "20250514",
-      "day5": "20250606"
+      "day1": "20250220",
+      "day2": "20250303",
+      "day3": "20250409",
+      "day4": "20250430",
+      "day5": "20250508"
     },
-    "save_time": "2025-06-06 23:13:44"
+    "save_time": "2025-06-07 15:51:04"
   },
   "ETF_588790": {
     "symbol": "588790",
@@ -185,19 +186,6 @@
       "day5": "20250603"
     },
     "save_time": "2025-06-06 14:35:16"
-  },
-  "股票_159869": {
-    "symbol": "159869",
-    "security_type": "股票",
-    "security_name": "未知股票",
-    "dates": {
-      "day1": "20240924",
-      "day2": "20241107",
-      "day3": "20250317",
-      "day4": "20250407",
-      "day5": "20250603"
-    },
-    "save_time": "2025-06-06 14:49:18"
   },
   "ETF_562510": {
     "symbol": "562510",
