@@ -25,7 +25,7 @@ pip install -r requirements.txt
 
 ### 2. 配置API密钥（可选）
 
-为了使用AI智能推荐功能，需要配置OpenAI API密钥：
+为了使用AI智能推荐功能，需要配置AI API密钥：
 
 #### 方法一：环境变量
 ```bash

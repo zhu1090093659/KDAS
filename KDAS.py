@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
 import json
+import re
 
 # 导入AI顾问模块
 try:
@@ -89,6 +90,26 @@ def save_api_key(api_key, model_name):
     
     return save_user_configs(configs)
 
+def save_ai_analysis_setting(enabled):
+    """保存AI分析开关设置"""
+    configs = load_user_configs()
+    
+    # 确保存在全局设置部分
+    if 'global_settings' not in configs:
+        configs['global_settings'] = {}
+    
+    # 保存AI分析开关设置
+    configs['global_settings']['ai_analysis_enabled'] = enabled
+    configs['global_settings']['save_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    return save_user_configs(configs)
+
+def load_ai_analysis_setting():
+    """加载AI分析开关设置"""
+    configs = load_user_configs()
+    global_settings = configs.get('global_settings', {})
+    return global_settings.get('ai_analysis_enabled', False)  # 默认关闭
+
 def load_api_key():
     """从配置文件加载API密钥"""
     configs = load_user_configs()
@@ -105,11 +126,228 @@ def delete_api_key():
             del configs['global_settings']['api_key']
         if 'default_model' in configs['global_settings']:
             del configs['global_settings']['default_model']
+        if 'ai_analysis_enabled' in configs['global_settings']:
+            del configs['global_settings']['ai_analysis_enabled']
         # 如果global_settings为空，则删除整个section
         if not configs['global_settings']:
             del configs['global_settings']
         return save_user_configs(configs)
     return False
+
+def _format_analysis_text(analysis_text):
+    """格式化AI分析文本，使其更适合Streamlit显示"""
+    import re
+    import json
+    
+    if not analysis_text or not analysis_text.strip():
+        return "暂无分析内容"
+    
+    # 尝试从文本中提取JSON部分
+    json_data = _extract_json_from_text(analysis_text)
+    
+    if json_data:
+        # 如果成功提取并解析JSON，则格式化展示
+        return _format_json_analysis(json_data)
+    else:
+        # 如果不是JSON格式，使用原有的文本格式化方法
+        return _format_plain_text_analysis(analysis_text)
+
+def _extract_json_from_text(text):
+    """从文本中提取JSON部分并解析为字典"""
+    import re
+    import json
+    
+    try:
+        # 方法1：尝试找到被```json包围的JSON
+        json_match = re.search(r'```json\s*\n(.*?)\n```', text, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(1).strip()
+            return json.loads(json_str)
+        
+        # 方法2：尝试找到大括号包围的JSON
+        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if json_match:
+            json_str = json_match.group().strip()
+            return json.loads(json_str)
+        
+        # 方法3：尝试直接解析整个文本
+        return json.loads(text.strip())
+        
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+def _format_json_analysis(json_data):
+    """格式化JSON格式的分析结果"""
+    if not isinstance(json_data, dict):
+        return "分析结果格式错误"
+    
+    formatted_content = []
+    
+    # 定义字段映射和图标
+    field_mapping = {
+        '状态': ('📊', 'KDAS状态分析'),
+        '多空力量分析': ('⚖️', '多空力量对比'),
+        '趋势方向判断': ('📈', '趋势方向判断'),
+        '交易建议': ('💡', '交易策略建议'),
+        '风险提示': ('⚠️', '风险评估提示'),
+        '置信度': ('🎯', '分析置信度')
+    }
+    
+    # 按预定义顺序展示字段
+    for field_key, (icon, title) in field_mapping.items():
+        if field_key in json_data:
+            content = json_data[field_key]
+            if content and str(content).strip():
+                # 格式化内容
+                formatted_content.append(f"#### {icon} {title}")
+                formatted_content.append("")
+                
+                # 应用文本样式
+                styled_content = _apply_text_styling(str(content))
+                formatted_content.append(styled_content)
+                formatted_content.append("")  # 添加空行分隔
+    
+    # 处理其他未映射的字段
+    for key, value in json_data.items():
+        if key not in field_mapping and value and str(value).strip():
+            formatted_content.append(f"#### 🔸 {key}")
+            formatted_content.append("")
+            styled_content = _apply_text_styling(str(value))
+            formatted_content.append(styled_content)
+            formatted_content.append("")
+    
+    return '\n'.join(formatted_content)
+
+def _format_plain_text_analysis(analysis_text):
+    """格式化普通文本格式的分析结果（保留原有逻辑）"""
+    import re
+    
+    # 首先处理整体结构
+    formatted_content = []
+    
+    # 按行分割并重新组织
+    lines = analysis_text.split('\n')
+    current_section = []
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            if current_section:
+                # 处理当前积累的段落
+                section_text = ' '.join(current_section).strip()
+                if section_text:
+                    formatted_content.append(_format_paragraph(section_text))
+                current_section = []
+            continue
+        
+        current_section.append(line)
+    
+    # 处理最后一个段落
+    if current_section:
+        section_text = ' '.join(current_section).strip()
+        if section_text:
+            formatted_content.append(_format_paragraph(section_text))
+    
+    # 合并所有内容
+    result = '\n\n'.join(formatted_content)
+    
+    # 全局样式优化
+    result = _apply_text_styling(result)
+    
+    return result
+
+def _format_paragraph(text):
+    """格式化单个段落"""
+    import re
+    
+    if not text.strip():
+        return ""
+    
+    # 处理主要章节标题（如：1. **当前KDAS状态判断**）
+    main_section_match = re.match(r'^(\d+)\.\s*\*\*(.*?)\*\*[:：]?(.*)', text)
+    
+    if main_section_match:
+        num = main_section_match.group(1)
+        title = main_section_match.group(2).strip()
+        content = main_section_match.group(3).strip()
+        
+        icons = {
+            '1': '📊', '2': '⚖️', '3': '📈', 
+            '4': '💡', '5': '🎯', '6': '⚠️'
+        }
+        icon = icons.get(num, '🔸')
+        
+        result = f"#### {icon} {num}. {title}\n"
+        if content:
+            result += f"\n{content}"
+        return result
+    
+    # 处理子标题（如：**多空力量分析**）
+    subtitle_match = re.match(r'^\*\*(.*?)\*\*[:：]?(.*)', text)
+    if subtitle_match:
+        title = subtitle_match.group(1).strip()
+        content = subtitle_match.group(2).strip()
+        result = f"**🔸 {title}**"
+        if content:
+            result += f"\n\n{content}"
+        return result
+    
+    # 处理引用内容
+    if text.startswith('"') and text.endswith('"'):
+        return f"> {text[1:-1]}"
+    
+    # 处理列表项
+    if text.startswith('- '):
+        return f"• {text[2:]}"
+    
+    # 处理普通段落
+    return text
+
+def _apply_text_styling(text):
+    """应用文本样式优化"""
+    
+    # 关键词高亮
+    styling_rules = [
+        ('多头', '🟢 **多头**'),
+        ('空头', '🔴 **空头**'),
+        ('支撑位', '🟢 **支撑位**'),
+        ('压力位', '🔴 **压力位**'),
+        ('阻力位', '🔴 **阻力位**'),
+        ('突破', '⚡ **突破**'),
+        ('趋势确认', '✅ **趋势确认**'),
+        ('趋势反转', '🔄 **趋势反转**'),
+        ('情绪宣泄', '😱 **情绪宣泄**'),
+        ('震荡', '📊 **震荡**'),
+        ('整理', '⏸️ **整理**'),
+        ('风险', '⚠️ **风险**'),
+        ('建议', '💡 **建议**'),
+        ('策略', '🎯 **策略**'),
+        ('关键位', '🔑 **关键位**'),
+        ('收敛', '📐 **收敛**'),
+        ('发散', '📏 **发散**'),
+        ('观望', '👀 **观望**'),
+        ('入场', '🚀 **入场**'),
+        ('止损', '🛑 **止损**'),
+        ('止盈', '✨ **止盈**'),
+        ('KDAS', '📊 **KDAS**'),
+        ('均线', '📈 **均线**'),
+        ('多空力量', '⚖️ **多空力量**'),
+        ('趋势行进', '📈 **趋势行进**'),
+        ('趋势衰竭', '📉 **趋势衰竭**'),
+        ('市场一致性', '🎯 **市场一致性**'),
+        ('情绪积累', '📊 **情绪积累**'),
+        ('盘整', '📊 **盘整**'),
+        ('强势', '💪 **强势**'),
+        ('弱势', '📉 **弱势**'),
+        ('高位', '⬆️ **高位**'),
+        ('低位', '⬇️ **低位**')
+    ]
+    
+    for old, new in styling_rules:
+        # 只替换独立的词，避免重复替换
+        text = re.sub(f'(?<!\\*){re.escape(old)}(?!\\*)', new, text)
+    
+    return text
 
 def save_multi_chart_config(global_dates, securities):
     """保存多图看板配置"""
@@ -206,64 +444,83 @@ def load_index_info():
 # 获取历史数据（股票、ETF、指数）
 @st.cache_data
 def get_security_data(symbol, input_date, security_type="股票"):
-    # 转换代码格式（如300328.SZ -> 300328）
-    symbol = symbol.split('.')[0]
-    start_date = min(input_date.values())
-    today = datetime.now().strftime('%Y%m%d')
-    
-    # 根据证券类型选择文件夹和API
-    if security_type == "股票":
-        folder = 'shares'
-        api_func = lambda: ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=start_date, adjust="qfq")
-        api_func_update = lambda last_date: ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=last_date, adjust="qfq")
-    elif security_type == "ETF":
-        folder = 'etfs'
-        api_func = lambda: ak.fund_etf_hist_em(symbol=symbol, period="daily", start_date=start_date, adjust="qfq")
-        api_func_update = lambda last_date: ak.fund_etf_hist_em(symbol=symbol, period="daily", start_date=last_date, adjust="qfq")
-    elif security_type == "指数":
-        folder = 'stocks'
-        api_func = lambda: ak.stock_zh_index_daily(symbol=symbol, start_date=start_date)
-        api_func_update = lambda last_date: ak.stock_zh_index_daily(symbol=symbol, start_date=last_date)
-    else:
-        raise ValueError(f"不支持的证券类型: {security_type}")
-    
-    file_path = f'{folder}/{symbol}.csv'
-    
-    if os.path.exists(file_path):
-        df = pd.read_csv(file_path)
-        df['日期'] = pd.to_datetime(df['日期'])
+    try:
+        # 转换代码格式（如300328.SZ -> 300328）
+        symbol = symbol.split('.')[0]
+        start_date = min(input_date.values())
+        today = datetime.now().strftime('%Y%m%d')
         
-        if not pd.to_datetime(start_date) in df['日期'].values:
+        # 根据证券类型选择文件夹和API
+        if security_type == "股票":
+            folder = 'shares'
+            api_func = lambda: ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=start_date, adjust="qfq")
+            api_func_update = lambda last_date: ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=last_date, adjust="qfq")
+        elif security_type == "ETF":
+            folder = 'etfs'
+            api_func = lambda: ak.fund_etf_hist_em(symbol=symbol, period="daily", start_date=start_date, adjust="qfq")
+            api_func_update = lambda last_date: ak.fund_etf_hist_em(symbol=symbol, period="daily", start_date=last_date, adjust="qfq")
+        elif security_type == "指数":
+            folder = 'stocks'
+            api_func = lambda: ak.stock_zh_index_daily(symbol=symbol, start_date=start_date)
+            api_func_update = lambda last_date: ak.stock_zh_index_daily(symbol=symbol, start_date=last_date)
+        else:
+            raise ValueError(f"不支持的证券类型: {security_type}")
+        
+        file_path = f'{folder}/{symbol}.csv'
+        
+        if os.path.exists(file_path):
+            df = pd.read_csv(file_path)
+            df['日期'] = pd.to_datetime(df['日期'])
+            
+            # 转换start_date为Timestamp以便比较
+            start_date_ts = pd.to_datetime(start_date)
+            if not (df['日期'] == start_date_ts).any():
+                df = api_func()
+                if not df.empty:
+                    # 确保日期列格式正确
+                    df['日期'] = pd.to_datetime(df['日期'])
+                    df.to_csv(file_path, index=False)
+            else:
+                # 检查是否需要更新数据 - 更安全的日期比较
+                last_date_in_df = df['日期'].iloc[-1]
+                today_ts = pd.to_datetime(today)
+                if last_date_in_df < today_ts:
+                    df_add = api_func_update(last_date_in_df.strftime('%Y%m%d'))
+                    if not df_add.empty:
+                        # 确保新数据的日期列格式正确
+                        df_add['日期'] = pd.to_datetime(df_add['日期'])
+                        df.drop(index=df.index[-1], inplace=True)
+                        df = pd.concat([df, df_add], ignore_index=True)
+                        # 去重并排序
+                        df = df.drop_duplicates(subset=['日期']).sort_values('日期').reset_index(drop=True)
+                        df.to_csv(file_path, index=False)
+        else:
             df = api_func()
             if not df.empty:
+                # 确保日期列格式正确
+                df['日期'] = pd.to_datetime(df['日期'])
                 df.to_csv(file_path, index=False)
-        elif df['日期'].iloc[-1] < pd.to_datetime(datetime.now().date()):
-            df_add = api_func_update(df['日期'].iloc[-1].strftime('%Y%m%d'))
-            if not df_add.empty:
-                df.drop(index=df.index[-1], inplace=True)
-                df = pd.concat([df, df_add], ignore_index=True)
-                # 去重并排序
-                df = df.drop_duplicates(subset=['日期']).sort_values('日期').reset_index(drop=True)
-                df.to_csv(file_path, index=False)
-    else:
-        df = api_func()
-        if not df.empty:
-            df.to_csv(file_path, index=False)
-    
-    # 确保数据不为空且格式正确
-    if df.empty:
+        
+        # 确保数据不为空且格式正确
+        if df.empty:
+            return df
+            
+        # 基本数据清理 - 确保日期列是Timestamp格式
+        df['日期'] = pd.to_datetime(df['日期'])
+        df = df.sort_values('日期').reset_index(drop=True)
+        
+        # 标准化列名，确保一致性
+        if security_type == "指数" and '股票代码' not in df.columns:
+            # 指数数据可能没有股票代码列，需要添加
+            df['股票代码'] = symbol
+        
         return df
         
-    # 基本数据清理
-    df['日期'] = pd.to_datetime(df['日期'])
-    df = df.sort_values('日期').reset_index(drop=True)
-    
-    # 标准化列名，确保一致性
-    if security_type == "指数" and '股票代码' not in df.columns:
-        # 指数数据可能没有股票代码列，需要添加
-        df['股票代码'] = symbol
-    
-    return df
+    except Exception as e:
+        # 添加更详细的错误信息
+        import traceback
+        error_details = traceback.format_exc()
+        raise Exception(f"get_security_data函数执行失败: {str(e)}\n详细错误:\n{error_details}")
 
 @st.cache_data
 def get_trade_calendar():
@@ -810,19 +1067,31 @@ def main():
             
             st.subheader("KDAS计算起始日期")
             
-            # AI智能推荐功能
+                            # AI智能推荐功能
             if AI_ADVISOR_AVAILABLE and symbol:
                 st.markdown("#### 🤖 AI智能推荐")
                 
                 # 加载保存的API密钥和模型配置
                 saved_api_key, saved_model = load_api_key()
                 
+                # AI分析开关
+                ai_analysis_enabled = load_ai_analysis_setting()
+                ai_enabled_checkbox = st.checkbox(
+                    "🔮 启用AI智能分析", 
+                    value=ai_analysis_enabled,
+                    help="开启后将在右侧显示AI分析报告"
+                )
+                
+                # 保存AI分析开关设置
+                if ai_enabled_checkbox != ai_analysis_enabled:
+                    save_ai_analysis_setting(ai_enabled_checkbox)
+                
                 # API密钥配置
                 api_key_input = st.text_input(
-                    "OpenAI API密钥", 
+                    "AI API密钥", 
                     value=saved_api_key,  # 使用保存的API密钥作为默认值
                     type="password", 
-                    help="输入您的OpenAI API密钥以使用AI智能推荐功能",
+                    help="输入您的AI API密钥以使用AI智能推荐功能",
                     placeholder="sk-..."
                 )
                 
@@ -868,10 +1137,15 @@ def main():
                     ai_recommend_btn = st.button(
                         "🧠 AI智能推荐日期", 
                         help="基于技术分析和KDAS体系原理智能推荐最佳日期",
-                        use_container_width=True
+                        use_container_width=True,
+                        disabled=not ai_enabled_checkbox  # 只有启用AI分析时才能使用
                     )
                 with col2:
                     show_analysis = st.checkbox("显示分析", help="显示详细的技术分析过程")
+                
+                # 如果AI分析未启用，显示提示
+                if not ai_enabled_checkbox:
+                    st.info("💡 请先勾选上方「🔮 启用AI智能分析」选项以使用AI推荐功能")
                 
                 # 处理AI推荐
                 if ai_recommend_btn:
@@ -881,14 +1155,16 @@ def main():
                             del st.session_state[key]
                     
                     if not api_key_input and not os.getenv('OPENAI_API_KEY'):
-                        st.error("⚠️ 请先配置OpenAI API密钥")
+                        st.error("⚠️ 请先配置AI API密钥")
                     else:
                         with st.spinner("🤖 AI正在分析技术数据并推荐日期..."):
                             try:
                                 # 获取数据进行分析
+                                st.info("正在获取数据进行分析...")
                                 temp_dates = {f'day{i+1}': (datetime.now() - timedelta(days=30*i)).strftime('%Y%m%d') for i in range(5)}
+                                st.info(f"正在获取数据: {temp_dates}")
                                 analysis_data = get_security_data(symbol, temp_dates, security_type)
-                                
+                                st.info(f"数据获取完成: {analysis_data}")
                                 if not analysis_data.empty:
                                     # 获取证券名称
                                     security_name = info_df[info_df["code"] == str(symbol)]["name"].values
@@ -966,13 +1242,19 @@ def main():
                             # 直接设置到session_state中，不设置default_dates避免冲突
                             st.session_state[f"date_{i+1}"] = date_obj
                         
+                        # 清除可能干扰的配置状态
+                        if 'current_dates' in st.session_state:
+                            del st.session_state['current_dates']
+                        
+                        # 设置标志表示正在使用AI推荐日期，防止被其他配置覆盖
+                        st.session_state.using_ai_dates = True
                         st.session_state.apply_ai_dates = False  # 重置标志
                         st.success("✅ 已应用AI推荐日期！")
                     except Exception as e:
                         st.warning(f"应用AI推荐日期失败: {e}")
             
-            # 如果有当前配置，使用配置中的日期
-            elif st.session_state.get('current_dates'):
+            # 如果有当前配置，使用配置中的日期（但不要覆盖AI推荐的日期）
+            elif st.session_state.get('current_dates') and not st.session_state.get('using_ai_dates', False):
                 current_dates = st.session_state.current_dates
                 try:
                     for i, (key, date_str) in enumerate(current_dates.items()):
@@ -983,10 +1265,11 @@ def main():
                 except Exception as e:
                     st.warning(f"加载完整配置的日期失败: {e}")
             
-            # 如果有保存的配置且用户选择加载，则使用保存的日期
+            # 如果有保存的配置且用户选择加载，则使用保存的日期（但不要覆盖AI推荐的日期）
             elif (saved_config and 
                 hasattr(st.session_state, 'load_saved_config') and 
-                st.session_state.load_saved_config):
+                st.session_state.load_saved_config and
+                not st.session_state.get('using_ai_dates', False)):
                 try:
                     for i, (key, date_str) in enumerate(saved_config['dates'].items()):
                         date_obj = datetime.strptime(date_str, '%Y%m%d').date()
@@ -1010,22 +1293,32 @@ def main():
                     if date_key not in st.session_state:
                         st.session_state[date_key] = default_dates[i]
                     
+                    # 获取当前日期值（用于检测用户手动更改）
+                    current_stored_date = st.session_state.get(date_key)
+                    
                     selected_date = st.date_input(
                         f"日期{i+1}",
                         key=f"date_{i+1}"
                     )
+                    
+                    # 如果用户手动更改了日期，清除AI推荐状态
+                    if (st.session_state.get('using_ai_dates', False) and 
+                        current_stored_date and 
+                        selected_date != current_stored_date):
+                        st.session_state.using_ai_dates = False
+                    
                     input_date[f'day{i+1}'] = selected_date.strftime('%Y%m%d')
             
             # 分析按钮
             analyze_button = st.button("🔍 开始分析", type="primary", use_container_width=True)
             
             # 如果当前有加载的配置，显示清除按钮
-            if st.session_state.get('current_security_type') or st.session_state.get('current_symbol') or st.session_state.get('current_dates'):
+            if st.session_state.get('current_security_type') or st.session_state.get('current_symbol') or st.session_state.get('current_dates') or st.session_state.get('using_ai_dates'):
                 if st.button("🔄 清除当前配置", use_container_width=True):
                     # 清除当前配置
                     keys_to_clear = [
                         'current_security_type', 'current_symbol', 'current_dates',
-                        'ai_recommended_dates', 'ai_reasoning', 'ai_confidence'
+                        'ai_recommended_dates', 'ai_reasoning', 'ai_confidence', 'using_ai_dates'
                     ]
                     for key in keys_to_clear:
                         if key in st.session_state:
@@ -1048,6 +1341,9 @@ def main():
             global_settings = configs.get('global_settings', {})
             if global_settings:
                 with st.expander("⚙️ 全局设置"):
+                    if 'ai_analysis_enabled' in global_settings:
+                        enabled_status = "✅ 已启用" if global_settings['ai_analysis_enabled'] else "❌ 已禁用"
+                        st.write(f"**AI智能分析**: {enabled_status}")
                     if 'api_key' in global_settings:
                         masked_key = global_settings['api_key'][:8] + "..." + global_settings['api_key'][-4:] if len(global_settings['api_key']) > 12 else "***"
                         st.write(f"**API密钥**: {masked_key}")
@@ -1141,25 +1437,129 @@ def main():
                     
                     st.markdown("---")
                     
-                    # 创建并显示图表
-                    fig = create_interactive_chart(processed_data, input_date, info_df, security_type, symbol)
-                    st.plotly_chart(fig, use_container_width=True)
+                    # 创建布局：左侧图表，右侧AI分析
+                    col_chart, col_analysis = st.columns([3, 2])  # 调整比例，给分析面板更多空间
                     
-                    # 显示KDAS数据表
-                    st.subheader("📋 KDAS数据详情")
+                    with col_chart:
+                        # 创建并显示图表
+                        fig = create_interactive_chart(processed_data, input_date, info_df, security_type, symbol)
+                        st.plotly_chart(fig, use_container_width=True)
                     
-                    # 准备显示的列
-                    display_cols = ['日期', '开盘', '收盘', '最高', '最低', '成交量', '成交额']
-                    kdas_cols = [col for col in processed_data.columns if col.startswith('KDAS')]
-                    display_cols.extend(kdas_cols)
+                    with col_analysis:
+                        st.subheader("🤖 KDAS智能分析")
+                        
+                        # AI分析功能
+                        if AI_ADVISOR_AVAILABLE:
+                            # 从侧边栏获取API密钥和模型配置
+                            saved_api_key, saved_model = load_api_key()
+                            ai_analysis_enabled = load_ai_analysis_setting()
+                            
+                            if ai_analysis_enabled and saved_api_key:  # 只有在开启AI分析且有API密钥时才分析
+                                # 自动进行KDAS状态分析
+                                with st.spinner("🧠 AI正在分析KDAS状态..."):
+                                    try:
+                                        advisor = get_ai_advisor(saved_api_key, saved_model)
+                                        if advisor:
+                                            analysis_result = advisor.analyze_kdas_state(
+                                                processed_data, input_date, symbol, security_name, security_type
+                                            )
+                                            
+                                            if analysis_result['success']:
+                                                st.success(f"✅ 分析完成 ({analysis_result['timestamp']})")
+                                                
+                                                # 显示分析结果，优化样式
+                                                st.markdown("""
+                                                <div style="
+                                                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                                                    padding: 1rem;
+                                                    border-radius: 10px;
+                                                    margin-bottom: 1rem;
+                                                    color: white;
+                                                    text-align: center;
+                                                ">
+                                                    <h3 style="margin: 0; color: white;">🤖 KDAS智能分析</h3>
+                                                    <p style="margin: 5px 0 0 0; opacity: 0.9;">AI模型: {}</p>
+                                                </div>
+                                                """.format(saved_model), unsafe_allow_html=True)
+                                                
+                                                # 使用容器来组织分析内容
+                                                with st.container():
+                                                    # 格式化并显示分析结果
+                                                    analysis_text = analysis_result['analysis']
+                                                    formatted_analysis = _format_analysis_text(analysis_text)
+                                                    
+                                                    # 使用expander让用户可以收起/展开
+                                                    with st.expander("📈 查看详细分析报告", expanded=True):
+                                                        st.markdown(formatted_analysis, unsafe_allow_html=True)
+                                            else:
+                                                st.error(f"❌ 分析失败: {analysis_result['error']}")
+                                                st.markdown(analysis_result['analysis'])
+                                        else:
+                                            st.error("❌ 无法初始化AI顾问")
+                                    except Exception as e:
+                                        st.error(f"❌ 分析过程出现错误: {str(e)}")
+                            
+                            elif not ai_analysis_enabled:  # AI分析未启用
+                                st.info("💡 **启用KDAS智能分析**")
+                                st.markdown("勾选左侧边栏「🔮 启用AI智能分析」选项，此处将自动显示专业的KDAS状态分析报告，包括：")
+                                st.markdown("- 📊 当前KDAS状态判断")
+                                st.markdown("- ⚖️ 多空力量分析")
+                                st.markdown("- 📈 趋势方向判断")
+                                st.markdown("- 💡 交易策略建议")
+                                st.markdown("- 🎯 关键位识别")
+                                st.markdown("- ⚠️ 风险提示")
+                                
+                                st.info("💡 在左侧边栏勾选「🔮 启用AI智能分析」即可开启")
+                            
+                            elif not saved_api_key:  # 没有保存的API密钥
+                                st.info("💡 **配置AI API密钥**")
+                                st.markdown("您已启用AI智能分析，但还需要配置API密钥才能使用：")
+                                st.markdown("- 📊 当前KDAS状态判断")
+                                st.markdown("- ⚖️ 多空力量分析")
+                                st.markdown("- 📈 趋势方向判断")
+                                st.markdown("- 💡 交易策略建议")
+                                st.markdown("- 🎯 关键位识别")
+                                st.markdown("- ⚠️ 风险提示")
+                                
+                                st.warning("⚠️ 需要先在左侧边栏的AI智能推荐区域配置API密钥")
+                            
+                            else:  # 其他情况（应该不会到达这里）
+                                st.error("❌ 未知错误，请检查AI配置")
+                        
+                        else:
+                            st.warning("⚠️ AI智能分析功能需要安装openai库")
+                            st.info("请运行: pip install openai")
                     
-                    # 只显示最近的数据
-                    recent_data = processed_data[display_cols].tail(20)
-                    st.dataframe(recent_data, use_container_width=True)
+                    # # 显示KDAS数据表
+                    # st.subheader("📋 KDAS数据详情")
+                    
+                    # # 准备显示的列
+                    # display_cols = ['日期', '开盘', '收盘', '最高', '最低', '成交量', '成交额']
+                    # kdas_cols = [col for col in processed_data.columns if col.startswith('KDAS')]
+                    # display_cols.extend(kdas_cols)
+                    
+                    # # 只显示最近的数据
+                    # recent_data = processed_data[display_cols].tail(20)
+                    # st.dataframe(recent_data, use_container_width=True)
                     
                     # 保存当前配置
-                    if save_current_config(symbol, security_type, input_date, security_name):
-                        st.success("✅ 当前配置已自动保存，下次可直接加载！")
+                    if not st.session_state.get('using_ai_dates', False):
+                        # 正常情况下的自动保存
+                        if save_current_config(symbol, security_type, input_date, security_name):
+                            st.success("✅ 当前配置已自动保存，下次可直接加载！")
+                    else:
+                        # 使用AI推荐日期时的手动保存选项
+                        col_save1, col_save2 = st.columns(2)
+                        with col_save1:
+                            st.info("💡 当前使用AI推荐日期")
+                        with col_save2:
+                            if st.button("💾 保存AI推荐配置", help="将当前的AI推荐日期保存为配置"):
+                                if save_current_config(symbol, security_type, input_date, security_name):
+                                    st.success("✅ AI推荐配置已保存！")
+                                    # 清除AI推荐状态，允许正常使用保存的配置
+                                    st.session_state.using_ai_dates = False
+                                else:
+                                    st.error("❌ 保存失败，请重试")
                     
             except Exception as e:
                 st.error(f"分析过程中出现错误: {str(e)}")
@@ -1172,7 +1572,7 @@ def main():
             with st.expander("📖 使用说明"):
                 st.markdown("""
                 ### KDAS指标说明
-                KDAS（Key Date Average Settlement）是基于关键日期的累计成交量加权平均价格指标。
+                KDAS（Key Date Average Settlement）是基于关键日期的累计成交量加权平均价格指标。作者： 叙市 （全网同名）
                 
                 ### 使用步骤
                 1. 选择证券类型（股票、ETF、指数）
@@ -1180,22 +1580,38 @@ def main():
                    - 股票：如 000001、300001、001215等
                    - ETF：如 159915、159919、510300等
                    - 指数：如 000001（上证指数）、399001（深证成指）等
-                3. **🤖 AI智能推荐（推荐）** 或 手动选择5个关键的分析日期
-                4. 点击「开始分析」按钮
-                5. 查看K线图和KDAS指标走势
+                3. **(可选)** 勾选「🔮 启用AI智能分析」并配置API密钥以使用AI功能
+                4. **🤖 AI智能推荐（推荐）** 或 手动选择5个关键的分析日期
+                5. 点击「开始分析」按钮
+                6. 查看K线图、KDAS指标走势和AI分析报告
                 
-                ### 🤖 AI智能推荐功能（新增）
+                ### 🤖 AI智能功能（全新升级）
+                
+                #### 📅 智能日期推荐
                 - **多模型支持**: 支持DeepSeek-R1、Gemini-2.5等多种先进AI模型
                 - **智能分析**: 基于大语言模型分析证券的技术指标、价格趋势、成交量等数据
                 - **专业推荐**: 遵循KDAS交易体系原理，推荐最佳的关键日期
                 - **技术依据**: 识别重要的价格突破点、趋势转折点、异常成交量日期等
                 - **降低门槛**: 新手用户无需深入了解技术分析，即可获得专业的日期配置
-                - **API配置**: 需要配置OpenAI API密钥（sk-开头的密钥）
+                
+                #### 📊 KDAS状态智能分析（新增）
+                - **实时分析**: 基于KDAS交易体系自动分析当前市场状态
+                - **四种状态识别**: 趋势行进、趋势衰竭、震荡状态、整理状态的智能判断
+                - **多空力量分析**: 分析当前多空力量对比和价格与KDAS系统的位置关系
+                - **趋势方向判断**: 基于KDAS系统判断当前趋势方向和强度
+                - **交易策略建议**: 根据KDAS体系给出具体的交易策略建议
+                - **关键位识别**: 智能识别当前的关键支撑和压力位
+                - **风险提示**: 基于当前状态的风险评估和注意事项
+                - **专业解读**: 用易懂的语言解释复杂的技术分析结果
+                
+                #### 🔧 配置管理
+                - **🔮 AI分析开关**: 可选择性启用/禁用AI智能分析功能，默认关闭
+                - **API配置**: 需要配置AI API密钥（sk-开头的密钥）
                 - **模型选择**: 可根据需求选择不同的AI模型进行分析
                 - **置信度**: AI会评估推荐的置信度（高/中/低）
                 - **备用方案**: 当AI推荐失败时，自动提供智能备用日期方案
                 - **💾 配置记忆**: 点击"保存配置"按钮可保存API密钥和模型选择，刷新页面不会丢失
-                - **🔒 本地存储**: API密钥安全保存在本地配置文件中，仅您可以访问
+                - **🔒 本地存储**: 所有配置安全保存在本地配置文件中，仅您可以访问
                 
                 ### 🔧 支持的AI模型
                 - **deepseek-r1**: DeepSeek推理模型，逻辑推理能力强
@@ -1217,6 +1633,8 @@ def main():
                 - **成交量**: 显示每日的成交量情况
                 - **图例**: 位于图表左上角，可以点击控制显示/隐藏
                 - **时间轴优化**: 使用新浪财经官方交易日历数据，精确跳过非交易日，确保x轴连续显示
+                - **智能分析面板**: 右侧显示AI实时分析的KDAS状态和交易建议
+                - **布局优化**: 左侧图表占2/3，右侧分析面板占1/3，信息展示更高效
                 
                 ### 支持的证券类型
                 - **股票**: A股上市公司股票
