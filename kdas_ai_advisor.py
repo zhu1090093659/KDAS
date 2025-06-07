@@ -1,4 +1,4 @@
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -6,6 +6,7 @@ import json
 import os
 from typing import List, Dict, Tuple, Optional
 import streamlit as st
+import asyncio
 
 def safe_json_convert(obj):
     """安全地转换数据类型以支持JSON序列化"""
@@ -40,8 +41,10 @@ class KDASAIAdvisor:
         self.api_key = api_key or os.getenv('OPENAI_API_KEY', 'sk-OI98X2iylUhYtncA518f4c7dEa0746A290D590B90c941d01')
         if self.api_key:
             self.client = OpenAI(api_key=self.api_key, base_url="https://chatwithai.icu/v1")
+            self.async_client = AsyncOpenAI(api_key=self.api_key, base_url="https://chatwithai.icu/v1")
         else:
             self.client = None
+            self.async_client = None
         self.model = model  # 用户选择的AI模型
         
     def analyze_technical_indicators(self, df: pd.DataFrame) -> Dict:
@@ -282,6 +285,57 @@ class KDASAIAdvisor:
                 'error': f'GPT调用失败: {str(e)}',
                 'fallback_dates': self._generate_fallback_dates(df)
             }
+
+    async def generate_kdas_recommendation_async(self, df: pd.DataFrame, symbol: str, security_name: str, security_type: str) -> Dict:
+        """
+        异步生成KDAS日期推荐
+        
+        Args:
+            df: 价格数据DataFrame
+            symbol: 证券代码
+            security_name: 证券名称
+            security_type: 证券类型
+            
+        Returns:
+            包含推荐日期和理由的字典
+        """
+        if not self.api_key:
+            return {
+                'success': False,
+                'error': 'AI API密钥未配置',
+                'fallback_dates': self._generate_fallback_dates(df)
+            }
+        
+        try:
+            # 分析技术数据
+            technical_analysis = self.analyze_technical_indicators(df)
+            
+            # 准备发送给GPT的数据
+            gpt_input = self._prepare_gpt_input(df, technical_analysis, symbol, security_name, security_type)
+            
+            # 异步调用大语言模型
+            response = await self._call_llm_async(gpt_input)
+            
+            # 解析llm回复
+            recommendation = self._parse_gpt_response(response)
+            
+            # 验证推荐日期的有效性
+            validated_dates = self._validate_recommended_dates(recommendation['dates'], df)
+            
+            return {
+                'success': True,
+                'dates': validated_dates,
+                'reasoning': recommendation['reasoning'],
+                'confidence': recommendation.get('confidence', 'medium'),
+                'technical_analysis': technical_analysis
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'异步GPT调用失败: {str(e)}',
+                'fallback_dates': self._generate_fallback_dates(df)
+            }
     
     def _prepare_gpt_input(self, df: pd.DataFrame, technical_analysis: Dict, symbol: str, security_name: str, security_type: str) -> str:
         """准备发送给GPT的输入数据"""
@@ -371,6 +425,33 @@ KDAS体系原理：
             
         except Exception as e:
             raise Exception(f"GPT-4o调用失败: {str(e)}")
+    
+    async def _call_llm_async(self, prompt: str) -> str:
+        """异步调用大语言模型"""
+        try:
+            if not self.async_client:
+                raise Exception("异步OpenAI客户端未初始化")
+                
+            response = await self.async_client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": f"你是一位专业的股票技术分析师，精通KDAS交易体系。当前使用的AI模型是{self.model}。请基于技术分析数据给出专业的KDAS日期推荐，确保回复格式严格按照JSON格式。"
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                max_tokens=2000,
+                temperature=0.3
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            raise Exception(f"异步GPT调用失败: {str(e)}")
     
     def _parse_gpt_response(self, response: str) -> Dict:
         """解析GPT回复"""
@@ -531,6 +612,50 @@ KDAS体系原理：
                 'success': False,
                 'error': f'KDAS状态分析失败: {str(e)}',
                 'analysis': f'分析过程中出现错误: {str(e)}'
+            }
+
+    async def analyze_kdas_state_async(self, df: pd.DataFrame, input_dates: Dict, symbol: str, security_name: str, security_type: str) -> Dict:
+        """
+        异步分析当前KDAS交易状态
+        
+        Args:
+            df: 包含KDAS计算结果的DataFrame
+            input_dates: KDAS计算起始日期字典
+            symbol: 证券代码
+            security_name: 证券名称
+            security_type: 证券类型
+            
+        Returns:
+            包含KDAS状态分析结果的字典
+        """
+        if not self.api_key:
+            return {
+                'success': False,
+                'error': 'AI API密钥未配置',
+                'analysis': '需要配置AI API密钥才能使用KDAS状态分析功能'
+            }
+        
+        try:
+            # 准备KDAS状态分析数据
+            analysis_data = self._prepare_kdas_analysis_data(df, input_dates, symbol, security_name, security_type)
+            
+            # 准备KDAS分析prompt
+            prompt = self._prepare_kdas_analysis_prompt(analysis_data)
+            
+            # 异步调用大语言模型进行分析
+            response = await self._call_llm_async(prompt)
+            
+            return {
+                'success': True,
+                'analysis': response,
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'异步KDAS状态分析失败: {str(e)}',
+                'analysis': f'异步分析过程中出现错误: {str(e)}'
             }
 
     def _prepare_kdas_analysis_data(self, df: pd.DataFrame, input_dates: Dict, symbol: str, security_name: str, security_type: str) -> Dict:
@@ -695,6 +820,138 @@ KDAS系统特征：
 """
         
         return prompt
+
+    async def analyze_all_async(self, df: pd.DataFrame, symbol: str, security_name: str, security_type: str, input_dates: Optional[Dict] = None) -> Dict:
+        """
+        异步并发执行日期推荐和状态分析，提升整体效率
+        
+        Args:
+            df: 价格数据DataFrame
+            symbol: 证券代码
+            security_name: 证券名称  
+            security_type: 证券类型
+            input_dates: 可选的KDAS计算日期，如果提供则进行状态分析，否则只进行日期推荐
+            
+        Returns:
+            包含所有分析结果的字典
+        """
+        if not self.api_key:
+            return {
+                'success': False,
+                'error': 'AI API密钥未配置',
+                'recommendation': None,
+                'analysis': None
+            }
+        
+        try:
+            tasks = []
+            
+            # 总是进行日期推荐
+            recommendation_task = self.generate_kdas_recommendation_async(df, symbol, security_name, security_type)
+            tasks.append(('recommendation', recommendation_task))
+            
+            # 如果提供了input_dates，则进行状态分析
+            if input_dates:
+                analysis_task = self.analyze_kdas_state_async(df, input_dates, symbol, security_name, security_type)
+                tasks.append(('analysis', analysis_task))
+            
+            # 并发执行所有任务
+            results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
+            
+            # 组织结果
+            response = {
+                'success': True,
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'recommendation': None,
+                'analysis': None
+            }
+            
+            for i, (task_name, _) in enumerate(tasks):
+                result = results[i]
+                if isinstance(result, Exception):
+                    response[task_name] = {
+                        'success': False,
+                        'error': f'{task_name}任务失败: {str(result)}'
+                    }
+                else:
+                    response[task_name] = result
+            
+            return response
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'并发分析失败: {str(e)}',
+                'recommendation': None,
+                'analysis': None
+            }
+
+    async def batch_analyze_securities_async(self, securities_data: List[Dict]) -> List[Dict]:
+        """
+        批量异步分析多个证券，提升多图看板的效率
+        
+        Args:
+            securities_data: 证券数据列表，每个元素包含：
+                - df: DataFrame
+                - symbol: str
+                - security_name: str
+                - security_type: str
+                - input_dates: Dict (可选)
+                
+        Returns:
+            包含所有证券分析结果的列表
+        """
+        if not self.api_key:
+            return [{
+                'success': False,
+                'error': 'AI API密钥未配置',
+                'symbol': data.get('symbol', '未知'),
+                'recommendation': None,
+                'analysis': None
+            } for data in securities_data]
+        
+        try:
+            # 为每个证券创建分析任务
+            tasks = []
+            for data in securities_data:
+                task = self.analyze_all_async(
+                    df=data['df'],
+                    symbol=data['symbol'],
+                    security_name=data['security_name'],
+                    security_type=data['security_type'],
+                    input_dates=data.get('input_dates', None)
+                )
+                tasks.append((data['symbol'], task))
+            
+            # 并发执行所有任务
+            results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
+            
+            # 组织结果
+            final_results = []
+            for i, (symbol, _) in enumerate(tasks):
+                result = results[i]
+                if isinstance(result, Exception):
+                    final_results.append({
+                        'success': False,
+                        'error': f'证券{symbol}分析失败: {str(result)}',
+                        'symbol': symbol,
+                        'recommendation': None,
+                        'analysis': None
+                    })
+                else:
+                    result['symbol'] = symbol
+                    final_results.append(result)
+            
+            return final_results
+            
+        except Exception as e:
+            return [{
+                'success': False,
+                'error': f'批量分析失败: {str(e)}',
+                'symbol': data.get('symbol', '未知'),
+                'recommendation': None,
+                'analysis': None
+            } for data in securities_data]
 
 def get_ai_advisor(api_key: str = None, model: str = "deepseek-r1") -> Optional[KDASAIAdvisor]:
     """获取KDAS AI顾问实例"""
